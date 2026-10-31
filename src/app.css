@@ -1,0 +1,173 @@
+:root {
+  color-scheme: light;
+  --titlebar-height: 12px;
+  --window-controls-width: 14px;
+  --surface: #ffffff;
+  --surface-sidebar: #f4f3f1;
+  --text: #1c1b1a;
+  --text-muted: #6f6c68;
+  --border: rgb(0 0 0 / 0.08);
+  --border-strong: rgb(0 0 0 / 0.2);
+  --hover: rgb(0 0 0 / 0.05);
+  --selected: rgb(0 0 0 / 0.08);
+  --accent: #c43f28;
+  --danger: #b3261e;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --surface: #1a1918;
+    --surface-sidebar: #222120;
+    --text: #edebe8;
+    --text-muted: #9d9994;
+    --border: rgb(255 255 255 / 0.08);
+    --border-strong: rgb(255 255 255 / 0.22);
+    --hover: rgb(255 255 255 / 0.06);
+    --selected: rgb(255 255 255 / 0.1);
+    --accent: #e8634b;
+    --danger: #f2877e;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface: #1a1918;
+  --surface-sidebar: #222120;
+  --text: #edebe8;
+  --text-muted: #9d9994;
+  --border: rgb(255 255 255 / 0.08);
+  --border-strong: rgb(255 255 255 / 0.22);
+  --hover: rgb(255 255 255 / 0.06);
+  --selected: rgb(255 255 255 / 0.1);
+  --accent: #e8634b;
+  --danger: #f2877e;
+}
+
+:root[data-platform="mac"] {
+  --titlebar-height: 44px;
+  --window-controls-width: 82px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--surface);
+  color: var(--text);
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  /* Une application ne laisse pas sélectionner ses libellés. */
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+button {
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.button {
+  padding: 4px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--text);
+}
+
+.button:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.button:disabled {
+  opacity: 0.45;
+}
+
+.button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.button.primary:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+
+.button.danger-button {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.link {
+  padding: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.link:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.field {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.field:disabled {
+  opacity: 0.6;
+}
+
+textarea.field {
+  resize: vertical;
+}
+
+.segmented {
+  display: flex;
+  flex: none;
+  padding: 2px;
+  border-radius: 7px;
+  background: var(--hover);
+}
+
+.segmented button {
+  padding: 3px 12px;
+  border-radius: 5px;
+  color: var(--text-muted);
+}
+
+.segmented button.active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.2);
+}
