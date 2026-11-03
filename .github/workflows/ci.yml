@@ -13,7 +13,7 @@ jobs:
         os: [macos-latest, ubuntu-22.04, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
       # Tauri 2.11 est figé sur Rust 1.89 ; voir docs/ARCHITECTURE.md.
       - uses: dtolnay/rust-toolchain@1.89
