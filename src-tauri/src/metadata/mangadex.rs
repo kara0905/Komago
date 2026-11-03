@@ -5,7 +5,7 @@ use regex::Regex;
 use serde_json::Value;
 
 use super::http::{GuardedClient, HostRule, MAX_JSON_BYTES};
-use super::{parse_json, safe_id, AltTitle, MetadataProvider, ProviderSeries, SeriesQuery};
+use super::{parse_json, safe_id, AltTitle, ChapterTitle, MetadataProvider, ProviderSeries, SeriesQuery};
 use crate::error::{Error, Result};
 
 const API: &str = "https://api.mangadex.org";
@@ -48,6 +48,47 @@ impl MetadataProvider for MangaDex {
             .map_err(|_| Error::Network("adresse invalide".into()))?;
         let body = parse_json(&http.get(url.as_str(), MAX_JSON_BYTES)?)?;
         Ok(body["data"].as_array().map(|items| items.iter().filter_map(parse_manga).collect()).unwrap_or_default())
+    }
+
+    /// Chapitres traduits en français, sinon en anglais. Plusieurs traductions d'un
+    /// même numéro : la première en français l'emporte.
+    fn chapter_titles(&self, external_id: &str, http: &GuardedClient) -> Result<Vec<ChapterTitle>> {
+        let id = safe_id(external_id)?;
+        let mut titles: Vec<(ChapterTitle, bool)> = Vec::new();
+        let mut offset = 0usize;
+        loop {
+            let offset_text = offset.to_string();
+            let params = [
+                ("translatedLanguage[]", "fr"),
+                ("translatedLanguage[]", "en"),
+                ("order[chapter]", "asc"),
+                ("limit", "500"),
+                ("offset", offset_text.as_str()),
+            ];
+            let url = reqwest::Url::parse_with_params(&format!("{API}/manga/{id}/feed"), &params)
+                .map_err(|_| Error::Network("adresse invalide".into()))?;
+            let body = parse_json(&http.get(url.as_str(), MAX_JSON_BYTES)?)?;
+            let items = body["data"].as_array().cloned().unwrap_or_default();
+            for item in &items {
+                let attributes = &item["attributes"];
+                let number = attributes["chapter"].as_str().and_then(|n| n.replace(',', ".").parse::<f64>().ok());
+                let title = attributes["title"].as_str().map(str::trim).filter(|t| !t.is_empty());
+                let (Some(number), Some(title)) = (number, title) else { continue };
+                let french = attributes["translatedLanguage"] == "fr";
+                match titles.iter_mut().find(|(t, _)| t.number == number) {
+                    Some(existing) if french && !existing.1 => *existing = (ChapterTitle { number, title: title.to_string() }, true),
+                    Some(_) => {}
+                    None => titles.push((ChapterTitle { number, title: title.to_string() }, french)),
+                }
+            }
+            let total = body["total"].as_u64().unwrap_or(0) as usize;
+            offset += items.len();
+            // La pagination de MangaDex s'arrête à 10 000 éléments.
+            if items.is_empty() || offset >= total || offset >= 9_500 {
+                break;
+            }
+        }
+        Ok(titles.into_iter().map(|(t, _)| t).collect())
     }
 
     fn get_series(&self, external_id: &str, http: &GuardedClient) -> Result<ProviderSeries> {
@@ -227,6 +268,22 @@ mod tests {
         assert_eq!(clean_description("Before\n---\nAfter"), "Before");
         assert_eq!(clean_description("Rien à retirer - vraiment"), "Rien à retirer - vraiment");
         assert_eq!(clean_description("___ seulement"), "");
+    }
+
+    #[test]
+    fn chapter_titles_prefer_french_and_skip_untitled() {
+        let page = r#"{"total":4,"data":[
+            {"attributes":{"chapter":"1","title":"The Start","translatedLanguage":"en"}},
+            {"attributes":{"chapter":"1","title":"Le début","translatedLanguage":"fr"}},
+            {"attributes":{"chapter":"2","title":"","translatedLanguage":"en"}},
+            {"attributes":{"chapter":"2.5","title":"Extra","translatedLanguage":"en"}}]}"#;
+        let fake = FakeTransport::with(vec![(200, page.as_bytes().to_vec())]);
+        let titles = MangaDex.chapter_titles("abc-1", &client(&fake)).unwrap();
+        assert_eq!(
+            titles,
+            [ChapterTitle { number: 1.0, title: "Le début".into() }, ChapterTitle { number: 2.5, title: "Extra".into() }]
+        );
+        assert_eq!(fake.requests.lock().unwrap().len(), 1, "une seule page suffit");
     }
 
     #[test]

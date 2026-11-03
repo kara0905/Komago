@@ -39,6 +39,14 @@ impl Storage {
         Ok(storage)
     }
 
+    pub fn data_dir(&self) -> &Path {
+        &self.data
+    }
+
+    pub fn cache_dir(&self) -> &Path {
+        &self.cache
+    }
+
     pub fn database_path(&self) -> PathBuf {
         self.data.join("komago.db")
     }

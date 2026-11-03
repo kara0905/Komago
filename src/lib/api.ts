@@ -6,6 +6,7 @@ export type LibraryLayout = "grid" | "list";
 export type MetadataMode = "automatic" | "assisted" | "manual";
 export type ReaderMode = "vertical" | "ltr" | "rtl";
 export type ReaderFit = "width" | "height" | "original";
+export type ReaderPageSpacing = "none" | "normal" | "large";
 
 export interface Settings {
   theme: Theme;
@@ -17,6 +18,15 @@ export interface Settings {
   readerDoublePage: boolean;
   readerBackground: string;
   readerAutoHide: boolean;
+  readerPageSpacing: ReaderPageSpacing;
+  readerPageWidth: number;
+  readerBrightness: number;
+  readerContrast: number;
+  readerSaturation: number;
+  readerGrayscale: boolean;
+  readerNightMode: boolean;
+  readerAutoScrollSpeed: number;
+  readerKeyboardScrollStep: number;
   metadataMode: MetadataMode;
   disabledProviders: string[];
 }
@@ -238,6 +248,7 @@ export interface ImportEdits {
     include: boolean;
   }[];
   copyFiles: boolean;
+  ignoreExcluded?: boolean;
 }
 
 export interface ImportResult {
@@ -263,6 +274,7 @@ export interface ReaderChapter {
   sourceStatus: string | null;
   pages: { width: number | null; height: number | null }[];
   progress: { pageIndex: number; pageOffset: number; percent: number; completed: boolean } | null;
+  spreadOffset: boolean;
   previousChapterId: string | null;
   nextChapterId: string | null;
   historyId: string;
@@ -364,3 +376,73 @@ export const pageUrl = (chapterId: string, index: number) =>
 export const coverUrl = (assetId: string) => convertFileSrc(`cover/${assetId}`, "komago");
 export const previewUrl = (sessionId: string, chapterId: string) =>
   convertFileSrc(`preview/${sessionId}/${chapterId}`, "komago");
+
+// Dossiers suivis ---------------------------------------------------------------
+
+export interface LibraryRoot {
+  id: string;
+  path: string;
+  status: "available" | "missing";
+  sourceCount: number;
+  lastScannedAt: string | null;
+}
+
+export interface RootScan {
+  rootId: string;
+  path: string;
+  available: boolean;
+  newPaths: string[];
+}
+
+export const listRoots = () => invoke<{ roots: LibraryRoot[]; ignored: number }>("list_roots");
+export const addRoot = (path: string) => invoke<string>("add_root", { path });
+export const removeRoot = (id: string) => invoke<void>("remove_root", { id });
+export const scanRoots = () => invoke<RootScan[]>("scan_roots");
+export const clearIgnoredSources = () => invoke<number>("clear_ignored_sources");
+
+// Lecture -----------------------------------------------------------------------
+
+export interface ContinueItem {
+  chapter: ChapterRow;
+  coverAssetId: string | null;
+  lastReadAt: string;
+}
+
+export const continueReading = () => invoke<ContinueItem[]>("continue_reading");
+export const setSpreadOffset = (seriesId: string, offset: boolean) =>
+  invoke<void>("set_spread_offset", { seriesId, offset });
+
+// Identification groupée --------------------------------------------------------
+
+export interface BatchEntry {
+  seriesId: string;
+  title: string;
+  outcome: "applied" | "uncertain" | "none" | "failed";
+  providerName: string | null;
+  matchedTitle: string | null;
+  message: string | null;
+}
+
+export const listUnidentified = () => invoke<SeriesCard[]>("list_unidentified");
+export function identifyBatch(seriesIds: string[], onProgress: (p: { done: number; total: number }) => void) {
+  const channel = new Channel<{ done: number; total: number }>();
+  channel.onmessage = onProgress;
+  return invoke<BatchEntry[]>("identify_batch", { seriesIds, onProgress: channel });
+}
+export const cancelIdentifyBatch = () => invoke<void>("cancel_identify_batch");
+export const fillChapterTitles = (seriesId: string, providerId: string) =>
+  invoke<number>("fill_chapter_titles", { seriesId, providerId });
+
+// Sauvegarde --------------------------------------------------------------------
+
+export interface StagedRestore {
+  manifest: { appVersion: string; databaseVersion: number; createdAt: string; includesLibrary: boolean };
+  seriesCount: number;
+  chapterCount: number;
+}
+
+export const exportBackup = (includeLibrary: boolean) =>
+  invoke<string | null>("export_backup", { includeLibrary });
+export const stageRestore = () => invoke<StagedRestore | null>("stage_restore");
+export const discardRestore = () => invoke<void>("discard_restore");
+export const restartApp = () => invoke<void>("restart_app");

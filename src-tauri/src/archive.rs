@@ -8,6 +8,10 @@ use std::path::{Component, Path, PathBuf};
 
 use zip::ZipArchive;
 
+mod extracted;
+
+pub use extracted::set_root as set_extraction_root;
+
 use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, Copy)]
@@ -37,6 +41,9 @@ const RATIO_FREE_BYTES: u64 = MIB;
 pub enum SourceKind {
     Zip,
     Directory,
+    /// CB7 et CBR : archives souvent « solides », extraites une fois dans le cache.
+    SevenZip,
+    Rar,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +55,7 @@ pub struct Entry {
 pub enum SourceReader {
     Zip(Box<ZipArchive<BufReader<File>>>, Limits),
     Directory(PathBuf, Limits),
+    Extracted(extracted::Extracted),
 }
 
 impl SourceReader {
@@ -71,6 +79,12 @@ impl SourceReader {
                 Ok(Self::Zip(Box::new(archive), limits))
             }
             SourceKind::Directory => Ok(Self::Directory(path.to_path_buf(), limits)),
+            SourceKind::SevenZip | SourceKind::Rar => {
+                if fs::metadata(path)?.len() > limits.max_source_bytes {
+                    return Err(Error::Archive("archive trop volumineuse".into()));
+                }
+                Ok(Self::Extracted(extracted::open(path, kind, &limits)?))
+            }
         }
     }
 
@@ -80,6 +94,7 @@ impl SourceReader {
         match self {
             Self::Zip(archive, limits) => zip_entries(archive, limits),
             Self::Directory(root, limits) => directory_entries(root, limits),
+            Self::Extracted(extracted) => Ok(extracted.entries()),
         }
     }
 
@@ -102,6 +117,7 @@ impl SourceReader {
                 let path = directory_entry_path(root, name)?;
                 read_capped(File::open(path)?, limits.max_entry_bytes, name)
             }
+            Self::Extracted(extracted) => extracted.read(name, None),
         }
     }
 
@@ -127,6 +143,7 @@ impl SourceReader {
                 let path = directory_entry_path(root, name)?;
                 File::open(path)?.take(bytes as u64).read_to_end(&mut buffer)?;
             }
+            Self::Extracted(extracted) => return extracted.read(name, Some(bytes)),
         }
         Ok(buffer)
     }
@@ -184,7 +201,7 @@ fn zip_entries(archive: &mut ZipArchive<BufReader<File>>, limits: &Limits) -> Re
 
 /// `enclosed_name` normalise les séparateurs ; cette vérification refuse en plus
 /// les formes qu'il tolérerait (`a/../b`, antislashs, lecteurs Windows).
-fn is_safe_entry_name(name: &str) -> bool {
+pub(crate) fn is_safe_entry_name(name: &str) -> bool {
     if name.is_empty() || name.contains('\0') || name.contains('\\') || name.starts_with('/') {
         return false;
     }
@@ -194,7 +211,7 @@ fn is_safe_entry_name(name: &str) -> bool {
     name.split('/').all(|part| part != "..")
 }
 
-fn is_junk(name: &str) -> bool {
+pub(crate) fn is_junk(name: &str) -> bool {
     name.split('/').any(|part| part == "__MACOSX" || part == ".git")
         || file_name(name).starts_with('.')
         || file_name(name).eq_ignore_ascii_case("thumbs.db")
@@ -280,6 +297,16 @@ pub fn sniff_image(bytes: &[u8]) -> Option<ImageFormat> {
         [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some(ImageFormat::Webp),
         [_, _, _, _, b'f', b't', b'y', b'p', b'a', b'v', b'i', ..] => Some(ImageFormat::Avif),
         [b'B', b'M', ..] => Some(ImageFormat::Bmp),
+        _ => None,
+    }
+}
+
+/// Type d'archive d'après son contenu : un « .cbr » est souvent un ZIP renommé.
+pub fn archive_kind(bytes: &[u8]) -> Option<SourceKind> {
+    match bytes {
+        _ if is_zip_signature(bytes) => Some(SourceKind::Zip),
+        [b'7', b'z', 0xBC, 0xAF, 0x27, 0x1C, ..] => Some(SourceKind::SevenZip),
+        [b'R', b'a', b'r', b'!', 0x1A, 0x07, ..] => Some(SourceKind::Rar),
         _ => None,
     }
 }

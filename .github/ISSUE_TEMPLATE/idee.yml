@@ -1,0 +1,21 @@
+name: Proposer une idée
+description: Une fonction, une amélioration, un format à prendre en charge.
+labels: [idée]
+body:
+  - type: textarea
+    id: besoin
+    attributes:
+      label: Le besoin
+      description: Quel problème cette idée résoudrait-elle ? Comment faites-vous aujourd'hui ?
+    validations:
+      required: true
+  - type: textarea
+    id: proposition
+    attributes:
+      label: Ce que vous proposez
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives envisagées

@@ -1,8 +1,15 @@
 name: Release
 
-# Lancement manuel : produit des paquets NON SIGNÉS en artefacts, sans rien publier.
+# Une étiquette vX.Y.Z crée une version en BROUILLON avec les paquets des trois
+# systèmes : rien n'est publié tant que le brouillon n'est pas relu et validé à
+# la main sur GitHub. Les paquets ne sont pas signés.
 on:
+  push:
+    tags: ["v*"]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   bundle:
@@ -38,8 +45,19 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/setup-nasm@v1
       - run: bun install --frozen-lockfile
-      - run: bunx tauri build ${{ matrix.args }}
-      - uses: actions/upload-artifact@v4
+      - run: bun run test
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          releaseName: Komago ${{ github.ref_name }}
+          releaseBody: Voir le [journal des versions](https://github.com/kara0905/Komago/blob/main/CHANGELOG.md).
+          releaseDraft: true
+          args: ${{ matrix.args }}
+      # Lancement manuel, sans étiquette : les paquets restent en artefacts.
+      - if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
         with:
           name: komago-${{ matrix.os }}-${{ matrix.target }}
           path: |

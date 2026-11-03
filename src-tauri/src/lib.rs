@@ -1,4 +1,5 @@
 mod archive;
+mod backup;
 mod collections;
 mod comicinfo;
 mod commands;
@@ -11,6 +12,7 @@ mod metadata;
 mod page_store;
 mod protocol;
 mod reader;
+mod roots;
 mod settings;
 mod storage;
 mod text;
@@ -51,7 +53,10 @@ fn initialize(app: &tauri::App) -> error::Result<AppState> {
         cache = root.join("cache");
     }
 
+    // Une restauration préparée s'applique avant l'ouverture de la base.
+    backup::apply_pending(&data)?;
     let storage = Storage::new(data, cache)?;
+    archive::set_extraction_root(storage.cache_dir().join("extracted"));
     let database = Database::open(&storage.database_path())?;
     let network_enabled = database.read(settings::load)?.network_enabled;
     let metadata = metadata::MetadataService::new(Box::new(metadata::http::ReqwestTransport::new()), network_enabled);
@@ -123,6 +128,21 @@ pub fn run() {
             commands::open_series_link,
             commands::reveal_data_folder,
             commands::app_info,
+            commands::list_roots,
+            commands::add_root,
+            commands::remove_root,
+            commands::scan_roots,
+            commands::clear_ignored_sources,
+            commands::set_spread_offset,
+            commands::continue_reading,
+            commands::list_unidentified,
+            commands::identify_batch,
+            commands::cancel_identify_batch,
+            commands::fill_chapter_titles,
+            commands::export_backup,
+            commands::stage_restore,
+            commands::discard_restore,
+            commands::restart_app,
         ])
         .run(tauri::generate_context!())
         .expect("échec du démarrage de Komago");

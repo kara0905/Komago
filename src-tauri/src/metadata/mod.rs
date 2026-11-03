@@ -74,6 +74,35 @@ pub trait MetadataProvider: Send + Sync {
     fn site(&self) -> &'static str;
     fn search_series(&self, query: &SeriesQuery, http: &GuardedClient) -> Result<Vec<ProviderSeries>>;
     fn get_series(&self, external_id: &str, http: &GuardedClient) -> Result<ProviderSeries>;
+    /// Titres des chapitres, si le fournisseur les connaît.
+    fn chapter_titles(&self, _external_id: &str, _http: &GuardedClient) -> Result<Vec<ChapterTitle>> {
+        Ok(Vec::new())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChapterTitle {
+    pub number: f64,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchEntry {
+    pub series_id: String,
+    pub title: String,
+    /// `applied`, `uncertain`, `none` ou `failed`.
+    pub outcome: String,
+    pub provider_name: Option<String>,
+    pub matched_title: Option<String>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchProgress {
+    pub done: usize,
+    pub total: usize,
 }
 
 pub fn providers() -> Vec<Box<dyn MetadataProvider>> {
@@ -156,6 +185,7 @@ pub struct MetadataService {
     pub client: GuardedClient,
     providers: Vec<Box<dyn MetadataProvider>>,
     pending: Mutex<Option<Pending>>,
+    pub batch_cancel: std::sync::atomic::AtomicBool,
 }
 
 impl MetadataService {
@@ -165,7 +195,12 @@ impl MetadataService {
 
     pub fn with_providers(transport: Box<dyn Transport>, providers: Vec<Box<dyn MetadataProvider>>, enabled: bool) -> Self {
         let rules = providers.iter().flat_map(|p| p.hosts()).collect();
-        Self { client: GuardedClient::new(transport, rules, enabled), providers, pending: Mutex::new(None) }
+        Self {
+            client: GuardedClient::new(transport, rules, enabled),
+            providers,
+            pending: Mutex::new(None),
+            batch_cancel: std::sync::atomic::AtomicBool::new(false),
+        }
     }
 
     pub fn provider_list(&self) -> Vec<(&'static str, &'static str)> {
@@ -246,6 +281,109 @@ impl MetadataService {
         let token = Uuid::now_v7().to_string();
         *self.lock_pending() = Some(Pending { token: token.clone(), series_id: series_id.to_string(), candidates });
         Ok(SearchOutcome { token, matches, failures })
+    }
+
+    /// Identifie plusieurs séries d'un coup. Seules les correspondances « très
+    /// probables » sont associées ; les autres attendent un choix de l'utilisateur.
+    pub fn identify_batch(
+        &self,
+        database: &Database,
+        storage: &Storage,
+        series_ids: &[String],
+        mut on_progress: impl FnMut(BatchProgress),
+    ) -> Result<Vec<BatchEntry>> {
+        use std::sync::atomic::Ordering;
+        self.batch_cancel.store(false, Ordering::SeqCst);
+        let mut entries = Vec::new();
+        for (done, series_id) in series_ids.iter().enumerate() {
+            if self.batch_cancel.load(Ordering::SeqCst) {
+                break;
+            }
+            on_progress(BatchProgress { done, total: series_ids.len() });
+            let title = database.read(|c| Ok(library::get_series(c, series_id)?.title))?;
+            let mut entry = BatchEntry {
+                series_id: series_id.clone(),
+                title,
+                outcome: "none".into(),
+                provider_name: None,
+                matched_title: None,
+                message: None,
+            };
+            match self.search(database, series_id, None) {
+                Err(Error::NetworkDisabled) => return Err(Error::NetworkDisabled),
+                Err(error) => {
+                    entry.outcome = "failed".into();
+                    entry.message = Some(error.to_string());
+                }
+                Ok(outcome) => {
+                    if let Some(best) = outcome.matches.first() {
+                        entry.provider_name = Some(best.provider_name.clone());
+                        entry.matched_title = Some(best.series.title.clone());
+                        if best.certain {
+                            match self.apply(database, storage, &outcome.token, best.index, None) {
+                                Ok(_) => entry.outcome = "applied".into(),
+                                Err(error) => {
+                                    entry.outcome = "failed".into();
+                                    entry.message = Some(error.to_string());
+                                }
+                            }
+                        } else {
+                            entry.outcome = "uncertain".into();
+                        }
+                    } else if let Some(failure) = outcome.failures.first() {
+                        entry.outcome = "failed".into();
+                        entry.message = Some(format!("{} : {}", failure.provider_name, failure.message));
+                    }
+                }
+            }
+            entries.push(entry);
+        }
+        on_progress(BatchProgress { done: entries.len(), total: series_ids.len() });
+        Ok(entries)
+    }
+
+    /// Complète les titres de chapitres vides depuis une fiche associée. Un titre
+    /// saisi à la main ou déjà présent n'est jamais remplacé.
+    pub fn fill_chapter_titles(&self, database: &Database, series_id: &str, provider_id: &str) -> Result<usize> {
+        let external_id: String = database.read(|c| {
+            Ok(c.query_row(
+                "SELECT external_id FROM external_ids WHERE series_id = ?1 AND source_id = ?2",
+                params![series_id, provider_id],
+                |r| r.get(0),
+            )?)
+        })?;
+        let provider = self
+            .providers
+            .iter()
+            .find(|p| p.id() == provider_id)
+            .ok_or_else(|| Error::NotFound("fournisseur".into()))?;
+        let titles = provider.chapter_titles(&external_id, &self.client)?;
+        database.write(|connection| {
+            let tx = connection.transaction()?;
+            let mut statement = tx.prepare(
+                "SELECT c.id, c.number FROM chapters c
+                 WHERE c.series_id = ?1 AND c.number IS NOT NULL AND (c.title IS NULL OR c.title = '')
+                   AND NOT EXISTS (SELECT 1 FROM field_provenance p WHERE p.entity_type = 'chapter'
+                                   AND p.entity_id = c.id AND p.field = 'title' AND p.locked = 1)",
+            )?;
+            let empty: Vec<(String, f64)> =
+                statement.query_map([series_id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+            drop(statement);
+            let mut filled = 0;
+            for (chapter_id, number) in empty {
+                let Some(found) = titles.iter().find(|t| (t.number - number).abs() < 0.0005) else { continue };
+                tx.execute("UPDATE chapters SET title = ?1 WHERE id = ?2", params![found.title, chapter_id])?;
+                tx.execute(
+                    "INSERT INTO field_provenance (entity_type, entity_id, field, source_id, locked)
+                     VALUES ('chapter', ?1, 'title', ?2, 0)
+                     ON CONFLICT (entity_type, entity_id, field) DO UPDATE SET source_id = excluded.source_id, locked = 0",
+                    params![chapter_id, provider_id],
+                )?;
+                filled += 1;
+            }
+            tx.commit()?;
+            Ok(filled)
+        })
     }
 
     fn provider_name(&self, id: &str) -> String {
@@ -795,6 +933,37 @@ mod tests {
         assert!(!w.service.is_provider_site("mangadex", "https://x.test.evil.test/"));
         assert!(!w.service.is_provider_site("mangadex", "file:///etc/passwd"));
         assert!(!w.service.is_provider_site("inconnu", "https://x.test/"));
+    }
+
+    #[test]
+    fn batch_associates_only_certain_matches() {
+        // Recherche, couverture (refusée : ce n'est pas une image), recherche.
+        let w = world(vec![search_ok(), search_ok(), search_ok()], true);
+        w.database
+            .write(|c| {
+                c.execute("INSERT INTO series (id, title, sort_title) VALUES ('x', 'Tout autre chose', 'x')", [])?;
+                Ok(())
+            })
+            .unwrap();
+        let entries = w
+            .service
+            .identify_batch(&w.database, &w.storage, &["s".to_string(), "x".to_string()], |_| {})
+            .unwrap();
+        assert_eq!(entries[0].outcome, "applied");
+        assert_eq!(entries[1].outcome, "uncertain");
+        assert_eq!(detail(&w).external_links.len(), 1);
+        let other: i64 = w
+            .database
+            .read(|c| Ok(c.query_row("SELECT count(*) FROM external_ids WHERE series_id = 'x'", [], |r| r.get(0))?))
+            .unwrap();
+        assert_eq!(other, 0, "jamais d'association incertaine");
+    }
+
+    #[test]
+    fn batch_stops_cleanly_offline() {
+        let w = world(vec![], false);
+        let result = w.service.identify_batch(&w.database, &w.storage, &["s".to_string()], |_| {});
+        assert!(matches!(result, Err(Error::NetworkDisabled)));
     }
 
     #[test]

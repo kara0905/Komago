@@ -6,11 +6,13 @@
   import { checkSources, createCollection, startupFailure } from "./lib/api";
   import { app } from "./lib/app.svelte";
   import { settings } from "./lib/settings.svelte";
+  import IdentifyView from "./views/IdentifyView.svelte";
   import ImportView from "./views/ImportView.svelte";
   import ReaderView from "./views/ReaderView.svelte";
   import LibraryView from "./views/LibraryView.svelte";
   import SeriesView from "./views/SeriesView.svelte";
   import SettingsView from "./views/SettingsView.svelte";
+  import komagoLogo from "./assets/komago-logo.png";
 
   let ready = $state(false);
   let fatal = $state<string | null>(null);
@@ -68,6 +70,7 @@
     checkSources()
       .then((missing) => (missing > 0 ? app.changed() : undefined))
       .catch(() => {});
+    app.scanRoots().catch(() => {});
   }
 
   function onSearch() {
@@ -103,6 +106,10 @@
 <div class="shell">
   <aside class="sidebar">
     <div class="drag" data-tauri-drag-region></div>
+    <div class="brand">
+      <img class="brand-mark" src={komagoLogo} alt="" />
+      <span class="brand-copy"><strong>Komago</strong></span>
+    </div>
     <div class="search">
       <input
         bind:this={searchInput}
@@ -130,6 +137,23 @@
       >
         Importer
       </button>
+      {#if app.newInRoots.length > 0}
+        <button
+          class="nav-item row news"
+          onclick={() => app.go({ name: "import", paths: app.newInRoots, fromRoots: true })}
+        >
+          <span class="name">Nouveautés</span>
+          <span class="count">{app.newInRoots.length}</span>
+        </button>
+      {/if}
+      <button
+        class="nav-item"
+        class:active={app.route.name === "identify"}
+        aria-current={app.route.name === "identify" ? "page" : undefined}
+        onclick={() => app.go({ name: "identify" })}
+      >
+        Identification
+      </button>
 
       <h2>Collections</h2>
       {#each system as collection (collection.id)}
@@ -142,6 +166,7 @@
       <button class="nav-item" onclick={() => (creating = true)}>Nouvelle collection</button>
     </nav>
     <div class="bottom">
+      <div class="local-status"><span></span>Bibliothèque locale</div>
       <button
         class="nav-item"
         class:active={app.route.name === "settings"}
@@ -171,8 +196,10 @@
       {/key}
     {:else if app.route.name === "import"}
       {#key app.route.paths}
-        <ImportView paths={app.route.paths} />
+        <ImportView paths={app.route.paths} fromRoots={app.route.fromRoots ?? false} />
       {/key}
+    {:else if app.route.name === "identify"}
+      <IdentifyView />
     {:else}
       <SettingsView />
     {/if}
@@ -228,6 +255,26 @@
     border-right: 1px solid var(--border);
   }
 
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 58px;
+    padding: 2px 18px 12px;
+  }
+
+  .brand-mark {
+    display: block;
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    object-fit: cover;
+    box-shadow: 0 2px 12px rgb(16 12 20 / 0.16);
+  }
+
+  .brand-copy { display: flex; flex-direction: column; line-height: 1.1; }
+  .brand-copy strong { font-size: 15px; letter-spacing: -0.02em; }
+
   .search {
     padding: 0 10px 8px;
   }
@@ -260,6 +307,8 @@
     color: var(--text-muted);
     font-size: 11px;
     font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
   }
 
   .gap {
@@ -270,6 +319,28 @@
   .bottom {
     padding: 8px 10px;
     border-top: 1px solid var(--border);
+  }
+
+  .local-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 8px;
+    padding: 9px 10px;
+    border: 1px solid rgb(67 177 138 / 0.2);
+    border-radius: 9px;
+    background: rgb(67 177 138 / 0.08);
+    color: #4eaa87;
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .local-status span {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #62caa1;
+    box-shadow: 0 0 9px rgb(98 202 161 / 0.35);
   }
 
   .nav-item {
@@ -294,14 +365,32 @@
 
   .nav-item.active {
     background: var(--selected);
-    color: var(--text);
+    color: var(--accent);
     font-weight: 550;
   }
+
+  .nav-item.active::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 7px;
+    bottom: 7px;
+    width: 2px;
+    border-radius: 0 2px 2px 0;
+    background: var(--accent);
+  }
+
+  .nav-item { position: relative; transition: background 120ms ease, color 120ms ease; }
 
   .name {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .news .name {
+    color: var(--accent);
+    font-weight: 600;
   }
 
   .count {

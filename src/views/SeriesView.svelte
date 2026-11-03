@@ -16,6 +16,7 @@
     removeSeriesFromCollection,
     setChapterRead,
     setSeriesMetadataMode,
+    fillChapterTitles,
     openSeriesLink,
     unlinkMetadata,
     type MetadataMode,
@@ -116,6 +117,20 @@
   async function changeMode(value: string) {
     await app.attempt(() => setSeriesMetadataMode(id, (value || null) as MetadataMode | null));
     await app.changed();
+  }
+
+  let titlesNote = $state<string | null>(null);
+
+  async function fillTitles(sourceId: string) {
+    titlesNote = "Recherche des titres…";
+    const filled = await app.attempt(() => fillChapterTitles(id, sourceId));
+    titlesNote =
+      filled === undefined
+        ? null
+        : filled === 0
+          ? "Aucun titre à compléter : les chapitres ont déjà un titre, ou MangaDex n'en connaît pas."
+          : `${plural(filled, "titre ajouté", "titres ajoutés")}.`;
+    if (filled) await app.changed();
   }
 
   async function unlink(sourceId: string) {
@@ -317,9 +332,13 @@
           <span class="source-name">{link.sourceName}</span>
           {#if link.url}<button class="link" title={link.url} onclick={() => app.attempt(() => openSeriesLink(id, link.sourceId))}>Voir la fiche</button>{/if}
           <button class="link" onclick={() => (dialog = { type: "metadata", refreshProvider: link.sourceId })}>Actualiser</button>
+          {#if link.sourceId === "mangadex"}
+            <button class="link" onclick={() => fillTitles(link.sourceId)}>Titres des chapitres</button>
+          {/if}
           <button class="link" onclick={() => unlink(link.sourceId)}>Dissocier</button>
         </div>
       {/each}
+      {#if titlesNote}<p class="note provenance" role="status">{titlesNote}</p>{/if}
       {#each groupedSources as [source, fields] (source)}
         <p class="note provenance">{source} : {fields.join(", ")}</p>
       {/each}

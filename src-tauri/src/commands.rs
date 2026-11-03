@@ -6,11 +6,13 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
-use crate::archive::{SourceKind, SourceReader};
+use crate::archive::SourceReader;
 use crate::collections::{self, Collection};
 use crate::covers;
 use crate::error::{Error, Result};
 use crate::import::{self, AnalyzeProgress, ImportEdits, ImportPlan, ImportResult};
+use crate::backup;
+use crate::roots;
 use crate::metadata::{self, ApplyOutcome, MetadataPreview, SearchOutcome};
 use crate::reader::{self, ProgressUpdate, ReaderChapter};
 use crate::library::{self, ChapterPatch, ChapterRow, SeriesCard, SeriesDetail, SeriesFilter, SeriesPatch, VolumePatch};
@@ -65,7 +67,7 @@ pub fn pick_import_files(app: AppHandle) -> Vec<String> {
     }
     app.dialog()
         .file()
-        .add_filter("Mangas et images", &["cbz", "zip", "jpg", "jpeg", "png", "webp", "gif", "avif", "bmp"])
+        .add_filter("Mangas et images", &["cbz", "zip", "cb7", "7z", "cbr", "rar", "jpg", "jpeg", "png", "webp", "gif", "avif", "bmp"])
         .blocking_pick_files()
         .unwrap_or_default()
         .into_iter()
@@ -76,6 +78,10 @@ pub fn pick_import_files(app: AppHandle) -> Vec<String> {
 
 #[tauri::command(async)]
 pub fn pick_import_folder(app: AppHandle) -> Vec<String> {
+    #[cfg(debug_assertions)]
+    if let Ok(paths) = std::env::var("KOMAGO_DEV_IMPORT") {
+        return paths.split(':').take(1).map(str::to_string).collect();
+    }
     app.dialog()
         .file()
         .blocking_pick_folder()
@@ -152,7 +158,7 @@ pub fn delete_series(state: State<'_, AppState>, id: String) -> Result<()> {
 #[tauri::command(async)]
 pub fn set_cover_from_chapter(state: State<'_, AppState>, series_id: String, chapter_id: String) -> Result<()> {
     let (path, kind, entry) = state.database.read(|c| library::first_page(c, &chapter_id))?;
-    let kind = if kind == "directory" { SourceKind::Directory } else { SourceKind::Zip };
+    let kind = reader::source_kind(&kind);
     let bytes = SourceReader::open(Path::new(&path), kind)?.read(&entry)?;
     let cover = covers::render(&bytes)?;
     state.database.write(|c| {
@@ -359,4 +365,135 @@ pub struct AppInfo {
 pub fn app_info(state: State<'_, AppState>) -> Result<AppInfo> {
     let database_version = state.database.read(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))?;
     Ok(AppInfo { version: env!("CARGO_PKG_VERSION"), database_version })
+}
+
+// Dossiers suivis ---------------------------------------------------------------
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RootsOverview {
+    roots: Vec<roots::Root>,
+    ignored: i64,
+}
+
+#[tauri::command(async)]
+pub fn list_roots(state: State<'_, AppState>) -> Result<RootsOverview> {
+    state.database.read(|c| Ok(RootsOverview { roots: roots::list(c)?, ignored: roots::ignored_count(c)? }))
+}
+
+#[tauri::command(async)]
+pub fn add_root(state: State<'_, AppState>, path: PathBuf) -> Result<String> {
+    state.database.write(|c| roots::add(c, &path))
+}
+
+#[tauri::command(async)]
+pub fn remove_root(state: State<'_, AppState>, id: String) -> Result<()> {
+    state.database.write(|c| roots::remove(c, &id))
+}
+
+#[tauri::command(async)]
+pub fn scan_roots(state: State<'_, AppState>) -> Result<Vec<roots::RootScan>> {
+    roots::scan(&state.database)
+}
+
+#[tauri::command(async)]
+pub fn clear_ignored_sources(state: State<'_, AppState>) -> Result<usize> {
+    state.database.write(roots::clear_ignored)
+}
+
+#[tauri::command(async)]
+pub fn set_spread_offset(state: State<'_, AppState>, series_id: String, offset: bool) -> Result<()> {
+    state.database.write(|c| reader::set_spread_offset(c, &series_id, offset))
+}
+
+#[tauri::command(async)]
+pub fn continue_reading(state: State<'_, AppState>) -> Result<Vec<library::ContinueItem>> {
+    state.database.read(|c| library::continue_reading(c, 12))
+}
+
+#[tauri::command(async)]
+pub fn list_unidentified(state: State<'_, AppState>) -> Result<Vec<SeriesCard>> {
+    state.database.read(library::list_unidentified)
+}
+
+#[tauri::command]
+pub async fn identify_batch(
+    app: AppHandle,
+    series_ids: Vec<String>,
+    on_progress: Channel<metadata::BatchProgress>,
+) -> Result<Vec<metadata::BatchEntry>> {
+    blocking(app, move |state| {
+        state.metadata.identify_batch(&state.database, &state.storage, &series_ids, |p| {
+            let _ = on_progress.send(p);
+        })
+    })
+    .await
+}
+
+#[tauri::command(async)]
+pub fn cancel_identify_batch(state: State<'_, AppState>) {
+    state.metadata.batch_cancel.store(true, Ordering::SeqCst);
+}
+
+#[tauri::command]
+pub async fn fill_chapter_titles(app: AppHandle, series_id: String, provider_id: String) -> Result<usize> {
+    blocking(app, move |state| state.metadata.fill_chapter_titles(&state.database, &series_id, &provider_id)).await
+}
+
+// Sauvegarde --------------------------------------------------------------------
+
+/// Renvoie le chemin écrit, ou rien si l'utilisateur a annulé.
+#[tauri::command]
+pub async fn export_backup(app: AppHandle, include_library: bool) -> Result<Option<String>> {
+    blocking(app.clone(), move |state| {
+        #[cfg(debug_assertions)]
+        if let Some(path) = std::env::var_os("KOMAGO_DEV_BACKUP").map(PathBuf::from) {
+            backup::export(&state.database, &state.storage, &path, include_library)?;
+            return Ok(Some(path.to_string_lossy().into_owned()));
+        }
+        let Some(path) = app
+            .dialog()
+            .file()
+            .set_file_name("Komago-sauvegarde.zip")
+            .add_filter("Sauvegarde Komago", &["zip"])
+            .blocking_save_file()
+            .and_then(|file| file.into_path().ok())
+        else {
+            return Ok(None);
+        };
+        backup::export(&state.database, &state.storage, &path, include_library)?;
+        Ok(Some(path.to_string_lossy().into_owned()))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn stage_restore(app: AppHandle) -> Result<Option<backup::StagedRestore>> {
+    blocking(app.clone(), move |state| {
+        #[cfg(debug_assertions)]
+        if let Some(path) = std::env::var_os("KOMAGO_DEV_BACKUP").map(PathBuf::from) {
+            return backup::stage(&state.storage, &path).map(Some);
+        }
+        let Some(path) = app
+            .dialog()
+            .file()
+            .add_filter("Sauvegarde Komago", &["zip"])
+            .blocking_pick_file()
+            .and_then(|file| file.into_path().ok())
+        else {
+            return Ok(None);
+        };
+        backup::stage(&state.storage, &path).map(Some)
+    })
+    .await
+}
+
+#[tauri::command(async)]
+pub fn discard_restore(state: State<'_, AppState>) {
+    backup::discard(&state.storage);
+}
+
+#[tauri::command]
+pub fn restart_app(app: AppHandle) {
+    app.restart();
 }

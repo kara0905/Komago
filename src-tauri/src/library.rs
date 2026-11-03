@@ -240,6 +240,15 @@ pub fn list_series(connection: &Connection, filter: &SeriesFilter) -> Result<Vec
     Ok(cards)
 }
 
+/// Séries sans aucune fiche externe associée.
+pub fn list_unidentified(connection: &Connection) -> Result<Vec<SeriesCard>> {
+    let all = list_series(connection, &SeriesFilter::default())?;
+    let mut statement = connection.prepare("SELECT DISTINCT series_id FROM external_ids")?;
+    let linked: std::collections::HashSet<String> =
+        statement.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    Ok(all.into_iter().filter(|s| !linked.contains(&s.id)).collect())
+}
+
 pub const CHAPTER_COLUMNS: &str = "c.id, c.series_id, s.title, c.volume_id, c.number, c.title, c.page_count,
         c.language, c.published_on, f.path, f.status, rp.percent, rp.completed_at IS NOT NULL";
 pub const CHAPTER_JOINS: &str = "JOIN series s ON s.id = c.series_id
@@ -383,25 +392,66 @@ pub fn get_series(connection: &Connection, id: &str) -> Result<SeriesDetail> {
     // Reprise : le dernier chapitre commencé et non terminé, sinon le premier non
     // lu dans l'ordre de lecture, sinon le début.
     detail.has_progress = detail.chapters.iter().any(|c| c.percent.is_some());
+    detail.resume_chapter_id = next_to_read(connection, id)?.or_else(|| {
+        crate::reader::reading_order(connection, id).ok().and_then(|order| order.first().cloned())
+    });
+    Ok(detail)
+}
+
+/// Chapitre à reprendre : le dernier commencé et non terminé, sinon le premier
+/// non lu dans l'ordre de lecture. `None` si tout est lu.
+fn next_to_read(connection: &Connection, series_id: &str) -> Result<Option<String>> {
     let started: Option<String> = connection
         .query_row(
             "SELECT p.chapter_id FROM reading_progress p JOIN chapters c ON c.id = p.chapter_id
              WHERE c.series_id = ?1 AND p.completed_at IS NULL
              ORDER BY p.last_read_at DESC LIMIT 1",
-            [id],
+            [series_id],
             |row| row.get(0),
         )
         .optional()?;
-    let order = crate::reader::reading_order(connection, id)?;
-    detail.resume_chapter_id = started
-        .or_else(|| {
-            order
-                .iter()
-                .find(|chapter| detail.chapters.iter().any(|c| &c.id == *chapter && !c.completed))
-                .cloned()
-        })
-        .or_else(|| order.first().cloned());
-    Ok(detail)
+    if started.is_some() {
+        return Ok(started);
+    }
+    let mut statement = connection.prepare_cached(
+        "SELECT c.id FROM chapters c LEFT JOIN reading_progress p ON p.chapter_id = c.id
+         WHERE c.series_id = ?1 AND p.completed_at IS NULL",
+    )?;
+    let unread: Vec<String> = statement.query_map([series_id], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    let order = crate::reader::reading_order(connection, series_id)?;
+    Ok(order.into_iter().find(|chapter| unread.contains(chapter)))
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContinueItem {
+    pub chapter: ChapterRow,
+    pub cover_asset_id: Option<String>,
+    pub last_read_at: String,
+}
+
+/// Séries lues récemment et leur prochain chapitre ; une série entièrement lue
+/// n'y figure plus.
+pub fn continue_reading(connection: &Connection, limit: usize) -> Result<Vec<ContinueItem>> {
+    let mut statement = connection.prepare(
+        "SELECT c.series_id, s.cover_asset_id, max(p.last_read_at) AS last
+         FROM reading_progress p JOIN chapters c ON c.id = p.chapter_id JOIN series s ON s.id = c.series_id
+         GROUP BY c.series_id ORDER BY last DESC LIMIT ?1",
+    )?;
+    let recent: Vec<(String, Option<String>, String)> = statement
+        .query_map([limit as i64 * 2], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let sql = format!("SELECT {CHAPTER_COLUMNS} FROM chapters c {CHAPTER_JOINS} WHERE c.id = ?1");
+    let mut items = Vec::new();
+    for (series_id, cover_asset_id, last_read_at) in recent {
+        let Some(chapter_id) = next_to_read(connection, &series_id)? else { continue };
+        let chapter = connection.query_row(&sql, [&chapter_id], chapter_row)?;
+        items.push(ContinueItem { chapter, cover_asset_id, last_read_at });
+        if items.len() == limit {
+            break;
+        }
+    }
+    Ok(items)
 }
 
 fn strings(connection: &Connection, sql: &str, id: &str) -> Result<Vec<String>> {
@@ -971,6 +1021,32 @@ mod tests {
         assert!(detail.has_progress);
         assert!(detail.chapters[0].completed);
         assert_eq!(detail.chapters[2].percent, Some(40.0));
+    }
+
+    #[test]
+    fn continue_reading_offers_the_next_chapter_and_drops_finished_series() {
+        let (_d, database, _s) = setup();
+        add_series(&database, "1", "A");
+        add_series(&database, "2", "B");
+        database
+            .write(|c| {
+                c.execute_batch(
+                    "INSERT INTO chapters (id, series_id, page_count, sort_key) VALUES
+                        ('a1', '1', 5, 1), ('a2', '1', 5, 2), ('b1', '2', 5, 1);",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let ids = |db: &Database| -> Vec<String> {
+            db.read(|c| continue_reading(c, 10)).unwrap().into_iter().map(|i| i.chapter.id).collect()
+        };
+        assert!(ids(&database).is_empty(), "rien de commencé");
+
+        database.write(|c| crate::reader::set_read(c, "a1", true)).unwrap();
+        assert_eq!(ids(&database), ["a2"], "chapitre suivant après un chapitre terminé");
+
+        database.write(|c| crate::reader::set_read(c, "b1", true)).unwrap();
+        assert_eq!(ids(&database), ["a2"], "B est entièrement lue");
     }
 
     #[test]

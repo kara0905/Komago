@@ -1,6 +1,12 @@
 {
   "name": "komago",
   "version": "0.1.0",
+  "description": "Lecture et gestion locale de mangas, webcomics et comics",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kara0905/Komago.git"
+  },
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,7 +14,9 @@
     "build": "vite build",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "tauri": "tauri",
-    "test": "bun test src && cargo test --manifest-path src-tauri/Cargo.toml"
+    "test": "vitest run && cargo test --manifest-path src-tauri/Cargo.toml",
+    "test:ui": "vitest run",
+    "third-party": "bun scripts/third-party.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "~2.11.1",
@@ -17,9 +25,13 @@
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "@tauri-apps/cli": "~2.11.5",
+    "@testing-library/svelte": "^5.4.2",
+    "@testing-library/user-event": "^14.6.8",
     "@tsconfig/svelte": "^5.0.8",
+    "jsdom": "^30.1.3",
     "svelte-check": "^4.7.7",
     "typescript": "^6.0.0",
-    "vite": "^8.3.5"
+    "vite": "^8.3.5",
+    "vitest": "^5.1.0"
   }
 }

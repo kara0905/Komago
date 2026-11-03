@@ -1,5 +1,7 @@
 mod migrations;
 
+pub use migrations::latest_version;
+
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 

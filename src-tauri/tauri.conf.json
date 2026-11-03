@@ -38,6 +38,15 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "copyright": "© 2026 Clément et les contributeurs de Komago",
+    "license": "MIT OR Apache-2.0",
+    "homepage": "https://github.com/kara0905/Komago",
+    "resources": {
+      "../LICENSE-MIT": "licenses/LICENSE-MIT",
+      "../LICENSE-APACHE": "licenses/LICENSE-APACHE",
+      "../THIRD-PARTY.md": "licenses/THIRD-PARTY.md",
+      "../licenses/UnRAR.txt": "licenses/UnRAR.txt"
+    }
   }
 }

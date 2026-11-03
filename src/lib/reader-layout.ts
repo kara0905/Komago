@@ -23,10 +23,12 @@ export function displaySize(page: PageSize, fit: Fit, viewportWidth: number, vie
 }
 
 /** Position du haut de chaque page ; la dernière valeur est la hauteur totale. */
-export function buildOffsets(heights: number[]): number[] {
+export function buildOffsets(heights: number[], gap = 0): number[] {
   const offsets = new Array<number>(heights.length + 1);
   offsets[0] = 0;
-  for (let i = 0; i < heights.length; i += 1) offsets[i + 1] = offsets[i] + heights[i];
+  for (let i = 0; i < heights.length; i += 1) {
+    offsets[i + 1] = offsets[i] + heights[i] + (i < heights.length - 1 ? gap : 0);
+  }
   return offsets;
 }
 
@@ -81,14 +83,15 @@ export function verticalPercent(scrollTop: number, viewportHeight: number, total
  * couverture, et une page déjà large occupe seule son écran. Une page isolée
  * avant une page large reste aussi seule.
  */
-export function buildSpreads(pages: PageSize[], double: boolean): number[][] {
+export function buildSpreads(pages: PageSize[], double: boolean, offset = false): number[][] {
   if (!double) return pages.map((_, index) => [index]);
   const spreads: number[][] = [];
   let index = 0;
   while (index < pages.length) {
     const next = index + 1;
+    // Décalé, la première page s'apparie aussi : utile pour un tome sans couverture.
     const pairable =
-      index > 0 && next < pages.length && !isWide(pages[index]) && !isWide(pages[next]);
+      (index > 0 || offset) && next < pages.length && !isWide(pages[index]) && !isWide(pages[next]);
     if (pairable) {
       spreads.push([index, next]);
       index += 2;
@@ -102,6 +105,13 @@ export function buildSpreads(pages: PageSize[], double: boolean): number[][] {
 
 function isWide(page: PageSize) {
   return page.width > page.height;
+}
+
+export const MIN_ZOOM = 0.25;
+export const MAX_ZOOM = 5;
+
+export function clampZoom(zoom: number) {
+  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(zoom * 100) / 100));
 }
 
 export function spreadOf(spreads: number[][], page: number) {

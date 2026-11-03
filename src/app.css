@@ -2,45 +2,57 @@
   color-scheme: light;
   --titlebar-height: 12px;
   --window-controls-width: 14px;
-  --surface: #ffffff;
-  --surface-sidebar: #f4f3f1;
-  --text: #1c1b1a;
-  --text-muted: #6f6c68;
-  --border: rgb(0 0 0 / 0.08);
-  --border-strong: rgb(0 0 0 / 0.2);
-  --hover: rgb(0 0 0 / 0.05);
-  --selected: rgb(0 0 0 / 0.08);
-  --accent: #c43f28;
+  --surface: #f8f5fa;
+  --surface-sidebar: #f0ebf3;
+  --surface-raised: #ffffff;
+  --text: #211d25;
+  --text-muted: #77717e;
+  --border: rgb(43 31 50 / 0.1);
+  --border-strong: rgb(43 31 50 / 0.2);
+  --hover: rgb(102 56 111 / 0.06);
+  --selected: rgb(199 91 184 / 0.14);
+  --accent: #b845a6;
+  --accent-soft: #f3dff0;
+  --accent-gradient: linear-gradient(110deg, #e16ac4, #ab62d9);
+  --surface-ink: #1f1d1b;
   --danger: #b3261e;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --surface: #1a1918;
-    --surface-sidebar: #222120;
-    --text: #edebe8;
-    --text-muted: #9d9994;
-    --border: rgb(255 255 255 / 0.08);
-    --border-strong: rgb(255 255 255 / 0.22);
-    --hover: rgb(255 255 255 / 0.06);
-    --selected: rgb(255 255 255 / 0.1);
-    --accent: #e8634b;
+    --surface: #111015;
+    --surface-sidebar: #141218;
+    --surface-raised: #1c1a22;
+    --text: #f2eef4;
+    --text-muted: #a19aa8;
+    --border: rgb(221 207 230 / 0.12);
+    --border-strong: rgb(221 207 230 / 0.2);
+    --hover: rgb(221 207 230 / 0.055);
+    --selected: rgb(203 100 191 / 0.14);
+    --accent: #e078cc;
+    --accent-soft: rgb(203 100 191 / 0.16);
+    --accent-gradient: linear-gradient(110deg, #e16ac4, #ab62d9);
+    --surface-ink: #f4f1ec;
     --danger: #f2877e;
   }
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --surface: #1a1918;
-  --surface-sidebar: #222120;
-  --text: #edebe8;
-  --text-muted: #9d9994;
-  --border: rgb(255 255 255 / 0.08);
-  --border-strong: rgb(255 255 255 / 0.22);
-  --hover: rgb(255 255 255 / 0.06);
-  --selected: rgb(255 255 255 / 0.1);
-  --accent: #e8634b;
+  --surface: #111015;
+  --surface-sidebar: #141218;
+  --surface-raised: #1c1a22;
+  --text: #f2eef4;
+  --text-muted: #a19aa8;
+  --border: rgb(221 207 230 / 0.12);
+  --border-strong: rgb(221 207 230 / 0.2);
+  --hover: rgb(221 207 230 / 0.055);
+  --selected: rgb(203 100 191 / 0.14);
+  --accent: #e078cc;
+  --accent-soft: rgb(203 100 191 / 0.16);
+  --accent-gradient: linear-gradient(110deg, #e16ac4, #ab62d9);
+  --surface-ink: #f4f1ec;
   --danger: #f2877e;
 }
 
@@ -84,6 +96,10 @@ button {
   font: inherit;
 }
 
+button:not(:disabled) {
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
@@ -106,13 +122,15 @@ button {
 
 .button.primary {
   border-color: var(--accent);
-  background: var(--accent);
-  color: #fff;
+  background: var(--accent-gradient);
+  color: #211620;
+  font-weight: 650;
+  box-shadow: 0 5px 18px rgb(185 75 169 / 0.18);
 }
 
 .button.primary:hover:not(:disabled) {
-  background: var(--accent);
-  filter: brightness(1.08);
+  background: var(--accent-gradient);
+  filter: brightness(1.06);
 }
 
 .button.danger-button {

@@ -41,6 +41,8 @@ pub struct ReaderChapter {
     pub series_id: String,
     pub series_title: String,
     pub direction: Option<String>,
+    /// Double page : appariement décalé d'une page (tome sans couverture).
+    pub spread_offset: bool,
     pub number: Option<f64>,
     pub title: Option<String>,
     pub source_status: Option<String>,
@@ -62,10 +64,11 @@ pub struct ProgressUpdate {
 }
 
 pub fn source_kind(kind: &str) -> SourceKind {
-    if kind == "directory" {
-        SourceKind::Directory
-    } else {
-        SourceKind::Zip
+    match kind {
+        "directory" => SourceKind::Directory,
+        "cb7" => SourceKind::SevenZip,
+        "cbr" => SourceKind::Rar,
+        _ => SourceKind::Zip,
     }
 }
 
@@ -108,7 +111,7 @@ pub fn open_chapter(database: &Database, id: &str) -> Result<ReaderChapter> {
     database.read(|connection| {
         let mut chapter = connection
             .query_row(
-                "SELECT c.series_id, s.title, s.reading_direction, c.number, c.title, f.status
+                "SELECT c.series_id, s.title, s.reading_direction, c.number, c.title, f.status, s.spread_offset
                  FROM chapters c JOIN series s ON s.id = c.series_id
                  LEFT JOIN source_files f ON f.id = c.source_id
                  WHERE c.id = ?1",
@@ -122,6 +125,7 @@ pub fn open_chapter(database: &Database, id: &str) -> Result<ReaderChapter> {
                         number: row.get(3)?,
                         title: row.get(4)?,
                         source_status: row.get(5)?,
+                        spread_offset: row.get(6)?,
                         pages: Vec::new(),
                         progress: None,
                         previous_chapter_id: None,
@@ -289,6 +293,11 @@ pub fn set_read(connection: &mut Connection, chapter_id: &str, read: bool) -> Re
         connection.execute("DELETE FROM reading_progress WHERE chapter_id = ?1", [chapter_id])?;
         Ok(())
     }
+}
+
+pub fn set_spread_offset(connection: &mut Connection, series_id: &str, offset: bool) -> Result<()> {
+    connection.execute("UPDATE series SET spread_offset = ?1 WHERE id = ?2", params![offset, series_id])?;
+    Ok(())
 }
 
 pub fn set_series_direction(connection: &mut Connection, series_id: &str, direction: &str) -> Result<()> {

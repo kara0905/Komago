@@ -12,6 +12,8 @@
     type StorageInfo,
     type Theme,
   } from "../lib/api";
+  import BackupSettings from "../components/BackupSettings.svelte";
+  import RootsSettings from "../components/RootsSettings.svelte";
   import { settings } from "../lib/settings.svelte";
 
   const themes: { value: Theme; label: string }[] = [
@@ -78,7 +80,7 @@
 
   {#if settings.current}
     <section>
-      <h2>Apparence</h2>
+      <h2><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/></svg>Apparence</h2>
       <div class="row">
         <span id="theme-label">Thème</span>
         <div class="segmented" role="radiogroup" aria-labelledby="theme-label">
@@ -97,7 +99,7 @@
     </section>
 
     <section>
-      <h2>Lecteur</h2>
+      <h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5.5c3.6-.8 6.6-.2 9 2v12c-2.4-2.2-5.4-2.8-9-2V5.5Zm18 0c-3.6-.8-6.6-.2-9 2v12c2.4-2.2 5.4-2.8 9-2V5.5Z"/></svg>Lecteur</h2>
       <label class="row">
         <span>Mode par défaut</span>
         <select
@@ -131,6 +133,57 @@
           <option value="original">Taille originale</option>
         </select>
       </label>
+      <label class="range-row">
+        <span>Largeur des planches <output>{settings.current.readerPageWidth}%</output></span>
+        <input type="range" min="40" max="100" step="5" value={settings.current.readerPageWidth}
+          onchange={(e) => run(() => settings.update({ readerPageWidth: Number(e.currentTarget.value) }))} />
+      </label>
+      <label class="row">
+        <span>Espacement entre les pages</span>
+        <select
+          value={settings.current.readerPageSpacing}
+          onchange={(e) => run(() => settings.update({ readerPageSpacing: e.currentTarget.value as "none" | "normal" | "large" }))}
+        >
+          <option value="none">Aucun</option>
+          <option value="normal">Normal</option>
+          <option value="large">Large</option>
+        </select>
+      </label>
+      <label class="range-row">
+        <span>Luminosité des pages <output>{settings.current.readerBrightness}%</output></span>
+        <input type="range" min="50" max="150" step="5" value={settings.current.readerBrightness}
+          onchange={(e) => run(() => settings.update({ readerBrightness: Number(e.currentTarget.value) }))} />
+      </label>
+      <label class="range-row">
+        <span>Contraste <output>{settings.current.readerContrast}%</output></span>
+        <input type="range" min="50" max="150" step="5" value={settings.current.readerContrast}
+          onchange={(e) => run(() => settings.update({ readerContrast: Number(e.currentTarget.value) }))} />
+      </label>
+      <label class="range-row">
+        <span>Saturation <output>{settings.current.readerSaturation}%</output></span>
+        <input type="range" min="0" max="200" step="10" value={settings.current.readerSaturation}
+          onchange={(e) => run(() => settings.update({ readerSaturation: Number(e.currentTarget.value) }))} />
+      </label>
+      <label class="row">
+        <span>Niveaux de gris</span>
+        <input type="checkbox" role="switch" checked={settings.current.readerGrayscale}
+          onchange={(e) => run(() => settings.update({ readerGrayscale: e.currentTarget.checked }))} />
+      </label>
+      <label class="row">
+        <span>Teinte chaude pour la lecture nocturne</span>
+        <input type="checkbox" role="switch" checked={settings.current.readerNightMode}
+          onchange={(e) => run(() => settings.update({ readerNightMode: e.currentTarget.checked }))} />
+      </label>
+      <label class="range-row">
+        <span>Vitesse du défilement automatique <output>{settings.current.readerAutoScrollSpeed} px/s</output></span>
+        <input type="range" min="20" max="400" step="20" value={settings.current.readerAutoScrollSpeed}
+          onchange={(e) => run(() => settings.update({ readerAutoScrollSpeed: Number(e.currentTarget.value) }))} />
+      </label>
+      <label class="range-row">
+        <span>Pas de défilement au clavier <output>{settings.current.readerKeyboardScrollStep} px</output></span>
+        <input type="range" min="40" max="1000" step="40" value={settings.current.readerKeyboardScrollStep}
+          onchange={(e) => run(() => settings.update({ readerKeyboardScrollStep: Number(e.currentTarget.value) }))} />
+      </label>
       <label class="row">
         <span>Double page</span>
         <input
@@ -160,7 +213,7 @@
     </section>
 
     <section>
-      <h2>Réseau</h2>
+      <h2><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3.5 9h17M3.5 15h17M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>Réseau</h2>
       <label class="row">
         <span class="label">
           Autoriser les connexions externes
@@ -206,9 +259,12 @@
     </section>
   {/if}
 
+  <RootsSettings />
+  <BackupSettings />
+
   {#if storage}
     <section>
-      <h2>Stockage</h2>
+      <h2><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>Stockage</h2>
       <dl>
         <div class="row"><dt>Base de données</dt><dd>{formatBytes(storage.databaseBytes)}</dd></div>
         <div class="row"><dt>Couvertures</dt><dd>{formatBytes(storage.coversBytes)}</dd></div>
@@ -239,7 +295,7 @@
 
   {#if info}
     <section>
-      <h2>À propos</h2>
+      <h2><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-8h.01"/></svg>À propos</h2>
       <div class="row"><span>Version de Komago</span><span class="muted">{info.version}</span></div>
       <div class="row"><span>Version de la base</span><span class="muted">{info.databaseVersion}</span></div>
       <p class="credits">
@@ -265,11 +321,16 @@
   }
 
   h2 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     margin: 0 0 4px;
     font-size: 12px;
     font-weight: 600;
     color: var(--text-muted);
   }
+
+  h2 svg { width: 16px; height: 16px; fill: none; stroke: var(--accent); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 
   section {
     margin-bottom: 28px;
@@ -310,6 +371,27 @@
     padding: 8px 0;
     border-bottom: 1px solid var(--border);
   }
+
+  .range-row {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .range-row span {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .range-row output {
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .range-row input { width: 100%; accent-color: var(--accent); }
 
   .path dd {
     min-width: 0;

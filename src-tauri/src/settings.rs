@@ -36,6 +36,14 @@ pub enum ReaderFit {
     Original,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReaderPageSpacing {
+    None,
+    Normal,
+    Large,
+}
+
 /// Paramètres de l'application. Un champ absent de la base prend sa valeur par
 /// défaut ; ajouter un paramètre ne demande donc pas de migration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -53,6 +61,15 @@ pub struct Settings {
     pub reader_double_page: bool,
     pub reader_background: String,
     pub reader_auto_hide: bool,
+    pub reader_page_spacing: ReaderPageSpacing,
+    pub reader_page_width: u8,
+    pub reader_brightness: u16,
+    pub reader_contrast: u16,
+    pub reader_saturation: u16,
+    pub reader_grayscale: bool,
+    pub reader_night_mode: bool,
+    pub reader_auto_scroll_speed: u16,
+    pub reader_keyboard_scroll_step: u16,
     /// Mode par défaut ; une série peut avoir le sien.
     pub metadata_mode: MetadataMode,
     pub disabled_providers: Vec<String>,
@@ -70,6 +87,15 @@ impl Default for Settings {
             reader_double_page: false,
             reader_background: "#111111".into(),
             reader_auto_hide: true,
+            reader_page_spacing: ReaderPageSpacing::Normal,
+            reader_page_width: 90,
+            reader_brightness: 100,
+            reader_contrast: 100,
+            reader_saturation: 100,
+            reader_grayscale: false,
+            reader_night_mode: false,
+            reader_auto_scroll_speed: 60,
+            reader_keyboard_scroll_step: 120,
             metadata_mode: MetadataMode::Assisted,
             disabled_providers: Vec::new(),
         }
@@ -166,6 +192,15 @@ mod tests {
             reader_double_page: true,
             reader_background: "#ffffff".into(),
             reader_auto_hide: false,
+            reader_page_spacing: ReaderPageSpacing::Large,
+            reader_page_width: 75,
+            reader_brightness: 115,
+            reader_contrast: 90,
+            reader_saturation: 80,
+            reader_grayscale: true,
+            reader_night_mode: true,
+            reader_auto_scroll_speed: 140,
+            reader_keyboard_scroll_step: 240,
             metadata_mode: MetadataMode::Manual,
             disabled_providers: vec!["anilist".into()],
         };

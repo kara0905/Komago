@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    ignore:
+      # La crate tauri et les paquets @tauri-apps doivent rester sur la même version
+      # mineure, et Tauri 2.12 exige Rust 1.90 : on les monte ensemble, à la main.
+      - dependency-name: "@tauri-apps/*"
+        update-types: [version-update:semver-minor]
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: monthly
+    ignore:
+      - dependency-name: "tauri*"
+        update-types: [version-update:semver-minor]

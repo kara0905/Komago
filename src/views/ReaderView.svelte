@@ -6,6 +6,7 @@
     pageUrl,
     saveProgress,
     setSeriesDirection,
+    setSpreadOffset,
     type ReaderChapter,
     type ReaderFit,
     type ReaderMode,
@@ -16,6 +17,7 @@
     anchorAt,
     buildOffsets,
     buildSpreads,
+    clampZoom,
     displaySize,
     FALLBACK_SIZE,
     pageAt,
@@ -28,6 +30,7 @@
     type Anchor,
     type PageSize,
   } from "../lib/reader-layout";
+  import ReaderPanel from "../components/ReaderPanel.svelte";
   import { settings } from "../lib/settings.svelte";
 
   let { chapterId }: { chapterId: string } = $props();
@@ -53,6 +56,7 @@
 
   let controlsVisible = $state(true);
   let panelOpen = $state(false);
+  let autoScroll = $state(false);
   let fullscreen = $state(false);
   let endMessage = $state<string | null>(null);
   let hideTimer: ReturnType<typeof setTimeout> | undefined;
@@ -62,6 +66,11 @@
   let lastAnchor: Anchor = { page: 0, offset: 0 };
   // Les images préchargées doivent rester référencées pour ne pas être libérées.
   let preloaded = new Map<number, HTMLImageElement>();
+  let autoScrollFrame = 0;
+  // Zoom propre à la session de lecture, appliqué par-dessus l'ajustement.
+  let zoom = $state(1);
+  let drag: { x: number; y: number; moved: boolean } | null = null;
+  let suppressClick = false;
 
   const mode = $derived<ReaderMode>(
     (chapter?.direction as ReaderMode | null) ?? settings.current?.readerMode ?? "ltr",
@@ -72,16 +81,36 @@
   const double = $derived(settings.current?.readerDoublePage ?? false);
   const background = $derived(settings.current?.readerBackground ?? "#111111");
   const autoHide = $derived(settings.current?.readerAutoHide ?? true);
+  const pageGap = $derived(
+    settings.current?.readerPageSpacing === "large" ? 24 : settings.current?.readerPageSpacing === "none" ? 0 : 12,
+  );
+  const pageWidthPercent = $derived(settings.current?.readerPageWidth ?? 90);
+  const brightness = $derived(settings.current?.readerBrightness ?? 100);
+  const contrast = $derived(settings.current?.readerContrast ?? 100);
+  const saturation = $derived(settings.current?.readerSaturation ?? 100);
+  const grayscale = $derived(settings.current?.readerGrayscale ?? false);
+  const nightMode = $derived(settings.current?.readerNightMode ?? false);
+  const autoScrollSpeed = $derived(settings.current?.readerAutoScrollSpeed ?? 60);
+  const keyboardScrollStep = $derived(settings.current?.readerKeyboardScrollStep ?? 120);
+  const imageFilter = $derived(
+    `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%)${grayscale ? " grayscale(1)" : ""}${nightMode ? " sepia(0.25)" : ""}`,
+  );
   const vertical = $derived(mode === "vertical");
   const pageCount = $derived(sizes.length);
 
   // Défilement vertical
   const displayed = $derived(
     vertical && viewportWidth > 0
-      ? sizes.map((size) => displaySize(size, fit, viewportWidth, viewportHeight))
+      ? sizes.map((size) => {
+          const displayed = displaySize(size, fit, viewportWidth, viewportHeight);
+          const maxWidth = (viewportWidth * pageWidthPercent) / 100;
+          const scale = Math.min(1, maxWidth / displayed.width);
+          const sized = scale < 1 ? scale : 1;
+          return { width: displayed.width * sized * zoom, height: displayed.height * sized * zoom };
+        })
       : [],
   );
-  const offsets = $derived(buildOffsets(displayed.map((size) => size.height)));
+  const offsets = $derived(buildOffsets(displayed.map((size) => size.height), pageGap));
   const totalHeight = $derived(offsets[offsets.length - 1] ?? 0);
   const contentWidth = $derived(Math.max(viewportWidth, ...displayed.slice(0, 2000).map((s) => s.width)));
   const range = $derived(visibleRange(offsets, scrollTop, viewportHeight, viewportHeight * 2));
@@ -92,8 +121,23 @@
   );
 
   // Pagination
-  const spreads = $derived(buildSpreads(sizes, double));
+  const spreads = $derived(buildSpreads(sizes, double, chapter?.spreadOffset ?? false));
   const spread = $derived(spreads[currentSpread] ?? []);
+
+  $effect(() => {
+    if (!autoScroll || !vertical || !scroller) return;
+    const speed = autoScrollSpeed;
+    let previous = performance.now();
+    const advance = (now: number) => {
+      if (!scroller) return;
+      scroller.scrollTop += ((now - previous) / 1000) * speed;
+      previous = now;
+      if (scroller.scrollTop + viewportHeight >= totalHeight - 1) autoScroll = false;
+      else autoScrollFrame = requestAnimationFrame(advance);
+    };
+    autoScrollFrame = requestAnimationFrame(advance);
+    return () => cancelAnimationFrame(autoScrollFrame);
+  });
 
   async function load() {
     try {
@@ -179,7 +223,7 @@
     const next = sizes.slice();
     next[index] = { width: image.naturalWidth, height: image.naturalHeight };
     sizes = next;
-    if (!vertical) currentSpread = spreadOf(buildSpreads(next, double), currentPage);
+    if (!vertical) currentSpread = spreadOf(buildSpreads(next, double, chapter?.spreadOffset ?? false), currentPage);
   }
 
   function retry(index: number) {
@@ -296,6 +340,17 @@
     app.go(chapter ? { name: "series", id: chapter.seriesId } : { name: "library" });
   }
 
+  function scrollVerticalBy(amount: number) {
+    if (!scroller) return;
+    if (amount < 0 && scrollTop <= 0) {
+      goToChapter(chapter?.previousChapterId);
+    } else if (amount > 0 && scrollTop + viewportHeight >= totalHeight - 1) {
+      atChapterEnd();
+    } else {
+      scroller.scrollBy({ top: amount });
+    }
+  }
+
   async function toggleFullscreen() {
     const target = !fullscreen;
     await app.attempt(() => getCurrentWindow().setFullscreen(target));
@@ -317,16 +372,29 @@
         else previousPage();
         break;
       case "ArrowDown":
-      case "PageDown":
       case " ":
         event.preventDefault();
-        if (event.shiftKey) previousPage();
+        if (vertical && scroller) scrollVerticalBy(event.shiftKey ? -keyboardScrollStep : keyboardScrollStep);
+        else if (event.shiftKey) previousPage();
         else nextPage();
         break;
       case "ArrowUp":
+        if (vertical && scroller) {
+          event.preventDefault();
+          scrollVerticalBy(-keyboardScrollStep);
+          break;
+        }
+        // En pagination, les flèches continuent de tourner les pages.
+        event.preventDefault();
+        previousPage();
+        break;
       case "PageUp":
         event.preventDefault();
         previousPage();
+        break;
+      case "PageDown":
+        event.preventDefault();
+        nextPage();
         break;
       case "Home":
         event.preventDefault();
@@ -339,6 +407,19 @@
       case "f":
         toggleFullscreen();
         break;
+      case "+":
+      case "=":
+        event.preventDefault();
+        setZoom(zoom * 1.25);
+        break;
+      case "-":
+        event.preventDefault();
+        setZoom(zoom / 1.25);
+        break;
+      case "0":
+        event.preventDefault();
+        setZoom(1);
+        break;
       case "Escape":
         if (panelOpen) panelOpen = false;
         else if (fullscreen) toggleFullscreen();
@@ -349,6 +430,10 @@
   }
 
   function onZoneClick(event: MouseEvent) {
+    if (suppressClick) {
+      suppressClick = false;
+      return;
+    }
     if (panelOpen) {
       panelOpen = false;
       return;
@@ -378,8 +463,62 @@
     app.attempt(() => settings.update(vertical ? { readerVerticalFit: next } : { readerFit: next }));
   }
 
+  function setZoom(next: number) {
+    const target = clampZoom(next);
+    if (target === zoom || !scroller) return;
+    // La page lue reste en place : on garde l'ancre verticale et le centre horizontal.
+    const anchor = lastAnchor;
+    const centerX = (scroller.scrollLeft + viewportWidth / 2) / Math.max(1, scroller.scrollWidth);
+    zoom = target;
+    tick().then(() => {
+      if (!scroller) return;
+      if (vertical) applyAnchor(anchor);
+      scroller.scrollLeft = centerX * scroller.scrollWidth - viewportWidth / 2;
+    });
+  }
+
+  async function changeOffset(offset: boolean) {
+    if (!chapter) return;
+    const page = currentPage;
+    const seriesId = chapter.seriesId;
+    await app.attempt(() => setSpreadOffset(seriesId, offset));
+    chapter.spreadOffset = offset;
+    currentSpread = spreadOf(spreads, page);
+  }
+
+  // Ctrl + molette, et le pincement du pavé tactile qui arrive sous cette forme.
+  function onWheel(event: WheelEvent) {
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    setZoom(zoom * Math.exp(-event.deltaY * 0.01));
+  }
+
+  // Glisser pour se déplacer dans une page zoomée ; un clic simple reste un clic.
+  function onPointerDown(event: PointerEvent) {
+    if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
+    drag = { x: event.clientX, y: event.clientY, moved: false };
+  }
+
+  function onPointerMove(event: PointerEvent) {
+    if (!drag || !scroller) return;
+    const dx = event.clientX - drag.x;
+    const dy = event.clientY - drag.y;
+    if (!drag.moved && Math.hypot(dx, dy) < 5) return;
+    drag.moved = true;
+    scroller.scrollLeft -= dx;
+    scroller.scrollTop -= dy;
+    drag.x = event.clientX;
+    drag.y = event.clientY;
+  }
+
+  function onPointerUp() {
+    suppressClick = drag?.moved ?? false;
+    drag = null;
+  }
+
   async function changeMode(next: ReaderMode) {
     if (!chapter) return;
+    autoScroll = false;
     const anchor = { page: currentPage, offset: vertical ? lastAnchor.offset : 0 };
     const seriesId = chapter.seriesId;
     await app.attempt(() => setSeriesDirection(seriesId, next));
@@ -404,6 +543,7 @@
     showControls();
     const observer = new ResizeObserver(onResize);
     if (scroller) observer.observe(scroller);
+    scroller?.addEventListener("wheel", onWheel, { passive: false });
     onResize();
     const onHidden = () => {
       if (document.visibilityState === "hidden") flushSave();
@@ -412,6 +552,7 @@
     window.addEventListener("pagehide", flushSave);
     return () => {
       observer.disconnect();
+      scroller?.removeEventListener("wheel", onWheel);
       document.removeEventListener("visibilitychange", onHidden);
       window.removeEventListener("pagehide", flushSave);
     };
@@ -420,6 +561,7 @@
   onDestroy(() => {
     flushSave();
     clearTimeout(hideTimer);
+    cancelAnimationFrame(autoScrollFrame);
     preloaded.clear();
     if (fullscreen) getCurrentWindow().setFullscreen(false).catch(() => {});
     app.changed().catch(() => {});
@@ -440,8 +582,13 @@
     bind:this={scroller}
     class="scroller"
     class:paged={!vertical}
+    class:zoomed={zoom > 1}
     onscroll={onScroll}
     onclick={onZoneClick}
+    onpointerdown={onPointerDown}
+    onpointermove={onPointerMove}
+    onpointerup={onPointerUp}
+    onpointercancel={onPointerUp}
   >
     {#if vertical}
       <div class="strip" style:height="{totalHeight}px" style:width="{contentWidth}px">
@@ -462,6 +609,7 @@
                 alt="Page {index + 1}"
                 decoding="async"
                 draggable="false"
+                style:filter={imageFilter}
                 onload={(e) => onImageLoad(index, e)}
                 onerror={() => onImageError(index)}
               />
@@ -474,6 +622,7 @@
         class="spread fit-{fit}"
         class:rtl={mode === "rtl"}
         class:two={spread.length === 2}
+        style={`--page-width: ${pageWidthPercent}vw; zoom: ${zoom}`}
       >
         {#each spread as index (index)}
           {#if (failed[index] ?? 0) > 0}
@@ -483,6 +632,7 @@
               src={srcFor(index)}
               alt="Page {index + 1}"
               draggable="false"
+              style:filter={imageFilter}
               onload={(e) => onImageLoad(index, e)}
               onerror={() => onImageError(index)}
             />
@@ -517,60 +667,37 @@
         <span class="chapter">{chapterLabel(chapter)}{chapter.title ? ` · ${chapter.title}` : ""}</span>
       {/if}
     </div>
-    <button class="ctl" aria-expanded={panelOpen} onclick={() => (panelOpen = !panelOpen)}>Affichage</button>
+    <button class="ctl settings-trigger" aria-expanded={panelOpen} onclick={() => (panelOpen = !panelOpen)}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"/><path d="m19.4 15 .1.1 1.1.9-1.2 2.1-1.4-.5a7.8 7.8 0 0 1-1.5.9l-.2 1.5h-2.4l-.3-1.5a7.8 7.8 0 0 1-1.5-.9l-1.4.5-1.2-2.1 1.1-.9a7 7 0 0 1 0-1.8l-1.1-.9 1.2-2.1 1.4.5a7.8 7.8 0 0 1 1.5-.9l.3-1.5h2.4l.2 1.5a7.8 7.8 0 0 1 1.5.9l1.4-.5 1.2 2.1-1.1.9a7 7 0 0 1 0 1.7Z"/></svg>
+      Lecture
+    </button>
+    {#if vertical}
+      <button class="ctl" aria-pressed={autoScroll} onclick={() => (autoScroll = !autoScroll)}>
+        {autoScroll ? "Pause défilement" : "Défilement auto"}
+      </button>
+    {/if}
     <button class="ctl" onclick={toggleFullscreen}>{fullscreen ? "Quitter le plein écran" : "Plein écran"}</button>
   </header>
 
-  {#if panelOpen && settings.current}
-    <div class="panel" role="group" aria-label="Affichage">
-      <div class="row">
-        <span>Mode</span>
-        <div class="seg">
-          <button class:on={mode === "vertical"} onclick={() => changeMode("vertical")}>Vertical</button>
-          <button class:on={mode === "ltr"} onclick={() => changeMode("ltr")}>Gauche à droite</button>
-          <button class:on={mode === "rtl"} onclick={() => changeMode("rtl")}>Droite à gauche</button>
-        </div>
-      </div>
-      <div class="row">
-        <span>Ajustement</span>
-        <div class="seg">
-          <button class:on={fit === "width"} onclick={() => setFit("width")}>Largeur</button>
-          <button class:on={fit === "height"} onclick={() => setFit("height")}>Hauteur</button>
-          <button class:on={fit === "original"} onclick={() => setFit("original")}>Originale</button>
-        </div>
-      </div>
-      <label class="row" class:muted={vertical}>
-        <span>Double page</span>
-        <input
-          type="checkbox"
-          checked={double}
-          disabled={vertical}
-          onchange={(e) => {
-            const page = currentPage;
-            settings.update({ readerDoublePage: e.currentTarget.checked }).then(() => {
-              currentSpread = spreadOf(spreads, page);
-            });
-          }}
-        />
-      </label>
-      <label class="row">
-        <span>Fond</span>
-        <input
-          type="color"
-          value={background}
-          onchange={(e) => settings.update({ readerBackground: e.currentTarget.value })}
-        />
-      </label>
-      <label class="row">
-        <span>Masquer les contrôles</span>
-        <input
-          type="checkbox"
-          checked={autoHide}
-          onchange={(e) => settings.update({ readerAutoHide: e.currentTarget.checked })}
-        />
-      </label>
-      <p class="hint">Le mode est retenu pour cette série.</p>
-    </div>
+  {#if panelOpen && settings.current && chapter}
+    <ReaderPanel
+      {mode}
+      {fit}
+      {double}
+      {vertical}
+      spreadOffset={chapter.spreadOffset}
+      {zoom}
+      onmode={changeMode}
+      onfit={setFit}
+      ondouble={(value) => {
+        const page = currentPage;
+        settings.update({ readerDoublePage: value }).then(() => {
+          currentSpread = spreadOf(spreads, page);
+        });
+      }}
+      onoffset={changeOffset}
+      onzoom={setZoom}
+    />
   {/if}
 
   <footer class="bar bottom" class:gone={!controlsVisible}>
@@ -586,6 +713,9 @@
       oninput={(e) => goToPage(Number(e.currentTarget.value))}
     />
     <span class="count">{pageCount > 0 ? currentPage + 1 : 0} / {pageCount}</span>
+    {#if zoom !== 1}
+      <button class="ctl" title="Revenir à 100 %" onclick={() => setZoom(1)}>{Math.round(zoom * 100)} %</button>
+    {/if}
     <button class="ctl" disabled={!chapter?.nextChapterId} onclick={() => goToChapter(chapter?.nextChapterId)}>Chapitre suivant</button>
   </footer>
 </div>
@@ -640,6 +770,10 @@
     height: 100%;
   }
 
+  .scroller.zoomed {
+    cursor: grab;
+  }
+
   .scroller.paged {
     display: flex;
   }
@@ -668,26 +802,32 @@
   }
 
   .fit-height img {
-    max-width: 100vw;
+    max-width: var(--page-width, 90vw);
     height: 100vh;
     object-fit: contain;
   }
 
   .fit-height.two img {
-    max-width: 50vw;
+    max-width: calc(var(--page-width, 90vw) / 2);
   }
 
   .fit-width img {
-    width: 100vw;
+    width: var(--page-width, 90vw);
     height: auto;
   }
 
   .fit-width.two img {
-    width: 50vw;
+    width: calc(var(--page-width, 90vw) / 2);
   }
 
   .fit-width {
     align-items: flex-start;
+  }
+
+  .fit-original img {
+    max-width: var(--page-width, 90vw);
+    max-height: 100vh;
+    object-fit: contain;
   }
 
   .page-error {
@@ -807,6 +947,14 @@
     background: rgb(255 255 255 / 0.12);
   }
 
+  .ctl[aria-pressed="true"] {
+    background: color-mix(in srgb, var(--accent) 24%, transparent);
+    color: var(--accent);
+  }
+
+  .settings-trigger { display: inline-flex; align-items: center; gap: 6px; }
+  .settings-trigger svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+
   .ctl:disabled {
     opacity: 0.35;
   }
@@ -830,65 +978,15 @@
     text-align: right;
   }
 
-  .panel {
-    position: absolute;
-    top: 52px;
-    right: 14px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    width: min(390px, calc(100vw - 28px));
-    padding: 14px;
-    border-radius: 10px;
-    background: rgb(28 28 28 / 0.97);
-    box-shadow: 0 12px 40px rgb(0 0 0 / 0.5);
-  }
 
-  .row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 14px;
-    min-height: 26px;
-  }
 
-  .row.muted {
-    opacity: 0.45;
-  }
 
-  .seg {
-    display: flex;
-    padding: 2px;
-    border-radius: 7px;
-    background: rgb(255 255 255 / 0.08);
-  }
 
-  .seg button {
-    padding: 3px 8px;
-    border-radius: 5px;
-    color: #bbb;
-    font-size: 12px;
-  }
 
-  .seg button.on {
-    background: rgb(255 255 255 / 0.18);
-    color: #fff;
-  }
 
-  input[type="color"] {
-    width: 34px;
-    height: 22px;
-    padding: 0;
-    border: 1px solid rgb(255 255 255 / 0.3);
-    border-radius: 4px;
-    background: none;
-  }
 
-  .hint {
-    margin: 0;
-    color: #999;
-    font-size: 12px;
-  }
+
+
 
   @media (max-width: 820px) {
     .bottom .ctl {

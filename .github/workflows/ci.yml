@@ -32,5 +32,11 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run check
       - run: bun run test
+      # L'inventaire des licences doit suivre les dépendances.
+      - name: Inventaire des licences à jour
+        if: runner.os == 'Linux'
+        run: |
+          bun run third-party
+          git diff --exit-code THIRD-PARTY.md
       - name: Compilation de l'application
         run: bunx tauri build --debug --no-bundle

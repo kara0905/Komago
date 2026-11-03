@@ -1,0 +1,47 @@
+name: Signaler un bug
+description: Quelque chose ne fonctionne pas comme prévu.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Merci de prendre le temps de signaler ce problème. Pour une faille de sécurité, utilisez plutôt le [signalement privé](https://github.com/kara0905/Komago/security/advisories/new).
+  - type: textarea
+    id: probleme
+    attributes:
+      label: Ce qui se passe
+      description: Décrivez le problème et ce que vous attendiez à la place.
+    validations:
+      required: true
+  - type: textarea
+    id: etapes
+    attributes:
+      label: Étapes pour reproduire
+      description: Si le problème concerne un import, décrivez la structure des dossiers et des noms de fichiers. Ne joignez pas d'œuvre protégée.
+      placeholder: |
+        1. Importer le dossier « Ma série/Volume 01/Chapter 001.cbz »
+        2. …
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version de Komago
+      description: Paramètres → À propos.
+    validations:
+      required: true
+  - type: dropdown
+    id: systeme
+    attributes:
+      label: Système
+      options:
+        - macOS
+        - Windows
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: version-systeme
+    attributes:
+      label: Version du système
+      placeholder: macOS 26.1, Windows 11 24H2, Ubuntu 24.04…

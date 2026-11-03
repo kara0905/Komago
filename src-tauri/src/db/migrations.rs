@@ -13,7 +13,12 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0003_metadata.sql"),
     include_str!("../../migrations/0004_import.sql"),
     include_str!("../../migrations/0005_metadata_matching.sql"),
+    include_str!("../../migrations/0006_roots_reader.sql"),
 ];
+
+pub const fn latest_version() -> i64 {
+    MIGRATIONS.len() as i64
+}
 
 pub fn run(connection: &mut Connection, db_path: &Path) -> Result<()> {
     run_migrations(connection, db_path, MIGRATIONS)
@@ -65,10 +70,6 @@ fn backup_path(db_path: &Path, version: i64) -> PathBuf {
 mod tests {
     use super::*;
     use tempfile::tempdir;
-
-    fn latest_version() -> i64 {
-        MIGRATIONS.len() as i64
-    }
 
     fn user_version(connection: &Connection) -> i64 {
         connection

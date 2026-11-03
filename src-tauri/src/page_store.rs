@@ -118,7 +118,14 @@ impl PageStore {
                 reader: SourceReader::open(path, kind)?,
             },
         };
-        let bytes = source.reader.read(entry);
+        let mut bytes = source.reader.read(entry);
+        // Une extraction effacée avec le cache : on rouvre une fois la source.
+        if bytes.is_err() {
+            if let Ok(reader) = SourceReader::open(path, kind) {
+                source.reader = reader;
+                bytes = source.reader.read(entry);
+            }
+        }
         sources.push_back(source);
         if sources.len() > OPEN_SOURCES {
             sources.pop_front();

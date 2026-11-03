@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from "svelte";
+  import { onDestroy, untrack } from "svelte";
   import Cover from "../components/Cover.svelte";
   import {
     analyzeImport,
@@ -15,7 +15,7 @@
   import { app } from "../lib/app.svelte";
   import { formatNumber, parseNumber, plural } from "../lib/format";
 
-  let { paths }: { paths: string[] } = $props();
+  let { paths, fromRoots = false }: { paths: string[]; fromRoots?: boolean } = $props();
 
   interface ChapterDraft {
     id: string;
@@ -45,6 +45,9 @@
   let seriesDrafts = $state<SeriesDraft[]>([]);
   let chapterDrafts = $state<ChapterDraft[]>([]);
   let copyFiles = $state(false);
+  let ignoreExcluded = $state(true);
+  // Un nouvel import lancé depuis cet écran ne vient plus des dossiers suivis.
+  let rootImport = $state(untrack(() => fromRoots));
   let result = $state<ImportResult | null>(null);
   let committed = false;
 
@@ -122,6 +125,7 @@
     const done = await app.attempt(() =>
       commitImport(sessionId, {
         copyFiles,
+        ignoreExcluded: rootImport && ignoreExcluded,
         series: seriesDrafts.map((s) => ({
           key: s.key,
           title: s.title,
@@ -145,9 +149,11 @@
     result = done;
     phase = "done";
     await app.changed();
+    app.scanRoots().catch(() => {});
   }
 
   function reset() {
+    rootImport = false;
     cancelImport().catch(() => {});
     plan = null;
     seriesDrafts = [];
@@ -167,7 +173,7 @@
 
   {#if phase === "pick"}
     <div class="pick">
-      <p>Choisissez des archives CBZ ou ZIP, des images ou un dossier complet. Vous pouvez aussi les déposer dans cette fenêtre.</p>
+      <p>Choisissez des archives CBZ, CB7, CBR ou ZIP, des images ou un dossier complet. Vous pouvez aussi les déposer dans cette fenêtre.</p>
       <div class="buttons">
         <button class="button primary" onclick={() => pick(pickImportFolder)}>Choisir un dossier</button>
         <button class="button" onclick={() => pick(pickImportFiles)}>Choisir des fichiers</button>
@@ -313,6 +319,12 @@
           <input type="checkbox" bind:checked={copyFiles} />
           Copier les fichiers dans la bibliothèque Komago
         </label>
+        {#if rootImport}
+          <label class="check">
+            <input type="checkbox" bind:checked={ignoreExcluded} />
+            Ne plus proposer les éléments décochés
+          </label>
+        {/if}
         <div class="buttons">
           <button class="button" onclick={reset}>Annuler</button>
           <button class="button primary" disabled={invalid || (included.length === 0 && plan.relocated === 0)} onclick={commit}>

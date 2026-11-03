@@ -77,6 +77,9 @@ pub struct ImportEdits {
     pub chapters: Vec<ChapterEdit>,
     #[serde(default)]
     pub copy_files: bool,
+    /// Les sources entièrement décochées ne seront plus proposées par les dossiers suivis.
+    #[serde(default)]
+    pub ignore_excluded: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -193,7 +196,8 @@ pub fn analyze(
     mut on_progress: impl FnMut(AnalyzeProgress),
 ) -> Result<(ImportSession, ImportPlan)> {
     let mut issues = Vec::new();
-    let units = collect_units(paths, &mut issues);
+    let roots = database.read(crate::roots::paths)?;
+    let units = collect_units(paths, &roots, &mut issues);
     let total = units.len();
 
     let mut sources = Vec::new();
@@ -339,7 +343,38 @@ fn infer(unit: &Unit, read: &ReadChapter) -> Inferred {
     Inferred { series, volume, number: own.chapter, title: own.title }
 }
 
-fn collect_units(paths: &[PathBuf], issues: &mut Vec<PlanIssue>) -> Vec<Unit> {
+/// Unités trouvées dans un dossier, pour repérer ce qui n'est pas encore importé.
+pub fn discover(root: &Path) -> Vec<PathBuf> {
+    let mut issues = Vec::new();
+    let mut found: Vec<PathBuf> = collect_units(&[root.to_path_buf()], &[], &mut issues).into_iter().map(|u| u.path).collect();
+    found.dedup();
+    found
+}
+
+/// Ancêtres d'un élément et position dans son dossier suivi. Dans un dossier
+/// suivi, la structure compte depuis la racine du dossier, et non depuis la
+/// sélection : un chapitre ajouté dans `Série/Volume 3/` reste dans « Série ».
+fn context(path: &Path, roots: &[PathBuf]) -> (Vec<String>, bool) {
+    let root = roots
+        .iter()
+        .filter(|root| path != root.as_path() && path.starts_with(root))
+        .max_by_key(|root| root.components().count());
+    let Some(root) = root else {
+        return (selection_context(path), false);
+    };
+    let mut ancestors = Vec::new();
+    let mut current = path.parent();
+    while let Some(dir) = current {
+        ancestors.push(base_name(dir));
+        if dir == root.as_path() {
+            break;
+        }
+        current = dir.parent();
+    }
+    (ancestors, path.parent() == Some(root.as_path()))
+}
+
+fn collect_units(paths: &[PathBuf], roots: &[PathBuf], issues: &mut Vec<PlanIssue>) -> Vec<Unit> {
     let mut units = Vec::new();
     let mut loose: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
 
@@ -350,7 +385,10 @@ fn collect_units(paths: &[PathBuf], issues: &mut Vec<PlanIssue>) -> Vec<Unit> {
         };
         if metadata.is_dir() {
             let root_name = base_name(path);
-            walk(path, &selection_context(path), &root_name, 0, &mut units, issues);
+            let (parents, _) = context(path, roots);
+            // Seul le contenu direct d'une sélection libre ou d'un dossier suivi est « à la racine ».
+            let inside_root = roots.iter().any(|root| path != root.as_path() && path.starts_with(root));
+            walk(path, &parents, &root_name, 0, !inside_root, &mut units, issues);
         } else if metadata.is_file() {
             let name = base_name(path);
             if archive::has_image_extension(&name) {
@@ -358,17 +396,14 @@ fn collect_units(paths: &[PathBuf], issues: &mut Vec<PlanIssue>) -> Vec<Unit> {
                     loose.entry(parent.to_path_buf()).or_default().push(name);
                 }
             } else {
-                classify_file(path, selection_context(path), false, &mut units, issues);
+                let (ancestors, at_root) = context(path, roots);
+                classify_file(path, ancestors, at_root, &mut units, issues);
             }
         }
     }
     for (parent, names) in loose {
-        units.push(Unit {
-            ancestors: selection_context(&parent),
-            path: parent,
-            kind: UnitKind::LooseImages(names),
-            at_selection_root: false,
-        });
+        let (ancestors, _) = context(&parent, roots);
+        units.push(Unit { ancestors, path: parent, kind: UnitKind::LooseImages(names), at_selection_root: false });
     }
     units
 }
@@ -383,7 +418,16 @@ fn selection_context(path: &Path) -> Vec<String> {
     path.parent().filter(|p| p.file_name().is_some()).map(|p| vec![base_name(p)]).unwrap_or_default()
 }
 
-fn walk(dir: &Path, parents: &[String], root_name: &str, depth: usize, units: &mut Vec<Unit>, issues: &mut Vec<PlanIssue>) {
+#[allow(clippy::too_many_arguments)]
+fn walk(
+    dir: &Path,
+    parents: &[String],
+    root_name: &str,
+    depth: usize,
+    root_level: bool,
+    units: &mut Vec<Unit>,
+    issues: &mut Vec<PlanIssue>,
+) {
     if depth > MAX_DEPTH || units.len() >= MAX_UNITS {
         issues.push(PlanIssue { path: dir.display().to_string(), message: "dossier ignoré : arborescence trop profonde".into() });
         return;
@@ -407,12 +451,12 @@ fn walk(dir: &Path, parents: &[String], root_name: &str, depth: usize, units: &m
             continue;
         }
         if file_type.is_dir() {
-            walk(&item.path(), &ancestors, root_name, depth + 1, units, issues);
+            walk(&item.path(), &ancestors, root_name, depth + 1, false, units, issues);
         } else if file_type.is_file() {
             if archive::has_image_extension(&name) {
                 has_images = true;
             } else {
-                classify_file(&item.path(), ancestors.clone(), depth == 0, units, issues);
+                classify_file(&item.path(), ancestors.clone(), root_level, units, issues);
             }
         }
     }
@@ -429,11 +473,11 @@ fn walk(dir: &Path, parents: &[String], root_name: &str, depth: usize, units: &m
 fn classify_file(path: &Path, ancestors: Vec<String>, at_selection_root: bool, units: &mut Vec<Unit>, issues: &mut Vec<PlanIssue>) {
     let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     let message = match extension.as_str() {
-        "cbz" | "zip" => {
+        "cbz" | "zip" | "cbr" | "rar" | "cb7" | "7z" => {
             units.push(Unit { path: path.to_path_buf(), kind: UnitKind::Archive, ancestors, at_selection_root });
             return;
         }
-        "cbr" | "rar" | "cb7" | "7z" | "pdf" => "format pas encore pris en charge",
+        "pdf" => "le PDF n'est pas encore pris en charge",
         _ => return,
     };
     issues.push(PlanIssue { path: path.display().to_string(), message: message.into() });
@@ -473,11 +517,10 @@ fn read_unit(unit: &Unit) -> Result<ReadUnit> {
 fn read_archive(path: &Path) -> Result<ReadUnit> {
     let mut prefix = Vec::new();
     File::open(path)?.take(archive::SIGNATURE_BYTES as u64).read_to_end(&mut prefix)?;
-    if !archive::is_zip_signature(&prefix) {
-        return Err(Error::Archive("ce fichier n'est pas une archive ZIP malgré son extension".into()));
-    }
-
-    let mut reader = SourceReader::open(path, SourceKind::Zip)?;
+    // Le contenu décide du format : un « .cbr » est souvent un ZIP renommé.
+    let kind = archive::archive_kind(&prefix)
+        .ok_or_else(|| Error::Archive("ce fichier n'est pas une archive lisible malgré son extension".into()))?;
+    let mut reader = SourceReader::open(path, kind)?;
     let entries = reader.entries()?;
     let (pages, comic_info_entry, mut warnings) = keep_images(&mut reader, entries);
     if pages.is_empty() {
@@ -516,8 +559,13 @@ fn read_archive(path: &Path) -> Result<ReadUnit> {
     let metadata = fs::metadata(path)?;
     let source = DraftSource {
         path: path.to_path_buf(),
-        kind: SourceKind::Zip,
-        db_kind: if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip")) { "zip" } else { "cbz" },
+        kind,
+        db_kind: match kind {
+            SourceKind::SevenZip => "cb7",
+            SourceKind::Rar => "cbr",
+            _ if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip")) => "zip",
+            _ => "cbz",
+        },
         size: metadata.len(),
         modified_at: modified_at(&metadata),
         partial_hash: hash_file(path, metadata.len())?,
@@ -750,13 +798,27 @@ fn apply(
     tx: &Transaction<'_>,
     storage: &Storage,
     session: &ImportSession,
-    _edits: &ImportEdits,
+    edits: &ImportEdits,
     series_edits: &HashMap<&str, &SeriesEdit>,
     included: &[&ChapterEdit],
     rendered: &HashMap<&str, covers::Cover>,
     managed_paths: &HashMap<usize, PathBuf>,
     result: &mut ImportResult,
 ) -> Result<()> {
+    let roots = crate::roots::list_ids_and_paths(tx)?;
+    if edits.ignore_excluded {
+        let included_sources: HashSet<usize> = included.iter().map(|e| session.chapters[&e.id].source).collect();
+        for (index, source) in session.sources.iter().enumerate() {
+            let known = session.relocations.iter().any(|(_, i)| *i == index);
+            if !included_sources.contains(&index) && !known {
+                tx.execute(
+                    "INSERT OR IGNORE INTO ignored_sources (path) VALUES (?1)",
+                    [source.path.to_string_lossy()],
+                )?;
+            }
+        }
+    }
+
     for (source_id, index) in &session.relocations {
         let source = &session.sources[*index];
         tx.execute(
@@ -803,7 +865,7 @@ fn apply(
         let source_id = match source_ids.get(&draft.source) {
             Some(id) => id.clone(),
             None => {
-                let id = upsert_source(tx, &session.sources[draft.source], managed_paths.get(&draft.source))?;
+                let id = upsert_source(tx, &session.sources[draft.source], managed_paths.get(&draft.source), &roots)?;
                 source_ids.insert(draft.source, id.clone());
                 id
             }
@@ -931,7 +993,12 @@ fn create_series(tx: &Transaction<'_>, title: &str, cover: Option<&str>, info: O
     Ok(id)
 }
 
-fn upsert_source(tx: &Transaction<'_>, source: &DraftSource, managed: Option<&PathBuf>) -> Result<String> {
+fn upsert_source(tx: &Transaction<'_>, source: &DraftSource, managed: Option<&PathBuf>, roots: &[(String, PathBuf)]) -> Result<String> {
+    let root_id = roots
+        .iter()
+        .filter(|(_, root)| source.path.starts_with(root))
+        .max_by_key(|(_, root)| root.components().count())
+        .map(|(id, _)| id.clone());
     let existing: Option<String> = tx
         .query_row(
             "SELECT id FROM source_files WHERE path = ?1",
@@ -951,8 +1018,8 @@ fn upsert_source(tx: &Transaction<'_>, source: &DraftSource, managed: Option<&Pa
     let id = Uuid::now_v7().to_string();
     let path = managed.unwrap_or(&source.path);
     tx.execute(
-        "INSERT INTO source_files (id, path, kind, storage, size_bytes, modified_at, partial_hash, last_seen_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+        "INSERT INTO source_files (id, path, kind, storage, size_bytes, modified_at, partial_hash, last_seen_at, root_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?8)",
         params![
             id,
             path.to_string_lossy(),
@@ -961,6 +1028,7 @@ fn upsert_source(tx: &Transaction<'_>, source: &DraftSource, managed: Option<&Pa
             source.size as i64,
             source.modified_at,
             source.partial_hash,
+            root_id,
         ],
     )?;
     Ok(id)
@@ -998,7 +1066,7 @@ fn copy_source(storage: &Storage, session: &ImportSession, index: usize) -> Resu
     let source = &session.sources[index];
     let id = Uuid::now_v7().to_string();
     match source.kind {
-        SourceKind::Zip => {
+        SourceKind::Zip | SourceKind::SevenZip | SourceKind::Rar => {
             let target = storage.library_dir().join(format!("{id}.{}", source.db_kind));
             fs::copy(&source.path, &target)?;
             Ok(target)
@@ -1127,6 +1195,7 @@ mod tests {
                 })
                 .collect(),
             copy_files: false,
+            ignore_excluded: false,
         }
     }
 
@@ -1211,6 +1280,76 @@ mod tests {
         let draft = &session.chapters[&plan.series[0].chapters[0].id];
         let names: Vec<_> = draft.pages.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["1.jpg", "2.jpg", "10.jpg"]);
+    }
+
+    #[test]
+    fn cb7_archives_import_like_cbz() {
+        let f = fixture();
+        let target = f.input().join("Série/Chapter 4.cb7");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pages.cb7"), &target).unwrap();
+        // Un « .cbr » qui est en réalité un ZIP est lu comme tel.
+        make_cbz(&f.input().join("Série/Chapter 5.cbr"));
+
+        let (session, plan) = f.analyze(&[f.input().join("Série")]);
+        assert_eq!(chapter_summary(&plan.series[0]), [(None, Some(4.0)), (None, Some(5.0))]);
+        assert_eq!(plan.series[0].chapters[0].page_count, 3, "notes.txt n'est pas une page");
+        f.commit_all(&session, &plan);
+        assert_eq!(f.count("SELECT count(*) FROM source_files WHERE kind = 'cb7'"), 1);
+        assert_eq!(f.count("SELECT count(*) FROM source_files WHERE kind = 'cbz'"), 1);
+        let names: Vec<String> = f
+            .database
+            .read(|c| {
+                let mut s = c.prepare(
+                    "SELECT p.entry_name FROM pages p JOIN chapters c ON c.id = p.chapter_id
+                     JOIN source_files f ON f.id = c.source_id WHERE f.kind = 'cb7' ORDER BY p.page_index",
+                )?;
+                let rows = s.query_map([], |r| r.get(0))?;
+                Ok(rows.collect::<rusqlite::Result<_>>()?)
+            })
+            .unwrap();
+        assert_eq!(names, ["1.png", "2.png", "10.png"]);
+    }
+
+    #[test]
+    fn a_new_chapter_in_a_followed_folder_keeps_its_series() {
+        let f = fixture();
+        let root = f.input().join("Ma série");
+        make_cbz(&root.join("Volume 01/Chapter 001.cbz"));
+        f.database.write(|c| crate::roots::add(c, &root).map(|_| ())).unwrap();
+
+        let (session, plan) = f.analyze(std::slice::from_ref(&root));
+        f.commit_all(&session, &plan);
+        assert_eq!(f.count("SELECT count(*) FROM source_files WHERE root_id IS NOT NULL"), 1);
+
+        // Ajouté plus tard, et analysé seul : la structure vient du dossier suivi.
+        let added = root.join("Volume 03/Chapter 009.cbz");
+        make_cbz(&added);
+        let (_, plan) = f.analyze(std::slice::from_ref(&added));
+        assert_eq!(plan.series[0].title, "Ma série");
+        assert!(plan.series[0].existing_series_id.is_some());
+        assert_eq!(chapter_summary(&plan.series[0]), [(Some(3.0), Some(9.0))]);
+
+        // Même chose pour un nouveau dossier de série dans un dossier conteneur.
+        let shelf = f.input().join("Étagère");
+        make_cbz(&shelf.join("Berserk/Chapter 1.cbz"));
+        f.database.write(|c| crate::roots::add(c, &shelf).map(|_| ())).unwrap();
+        let (_, plan) = f.analyze(&[shelf.join("Berserk")]);
+        assert_eq!(plan.series[0].title, "Berserk");
+    }
+
+    #[test]
+    fn excluded_sources_can_be_ignored_for_the_future() {
+        let f = fixture();
+        let root = f.input().join("Série");
+        make_cbz(&root.join("Chapter 1.cbz"));
+        make_cbz(&root.join("Chapter 2.cbz"));
+        let (session, plan) = f.analyze(std::slice::from_ref(&root));
+        let mut edits = accept(&plan);
+        edits.chapters[1].include = false;
+        edits.ignore_excluded = true;
+        commit(&f.database, &f.storage, &session, &edits).unwrap();
+        assert_eq!(f.count("SELECT count(*) FROM ignored_sources"), 1);
     }
 
     #[test]
@@ -1314,7 +1453,7 @@ mod tests {
         let root = f.input().join("Série");
         make_cbz(&root.join("Chapter 1.cbz"));
         fs::write(root.join("Chapter 2.cbz"), b"pas une archive").unwrap();
-        fs::write(root.join("Chapter 3.cbr"), b"Rar!").unwrap();
+        fs::write(root.join("Chapter 3.pdf"), b"%PDF-1.7").unwrap();
         write_zip(&root.join("Chapter 4.cbz"), &[("../../evil.jpg", JPEG)]);
         write_zip(&root.join("Chapter 5.cbz"), &[("notes.txt", b"rien")]);
 

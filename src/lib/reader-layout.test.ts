@@ -1,8 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import {
   anchorAt,
   buildOffsets,
   buildSpreads,
+  clampZoom,
   displaySize,
   pageAt,
   pagedPercent,
@@ -76,6 +77,11 @@ describe("doubles pages", () => {
     expect(buildSpreads([tall, tall, tall, tall, tall], true)).toEqual([[0], [1, 2], [3, 4]]);
   });
 
+  test("le décalage apparie aussi la première page", () => {
+    expect(buildSpreads([tall, tall, tall, tall], true, true)).toEqual([[0, 1], [2, 3]]);
+    expect(buildSpreads([tall, wide, tall], true, true)).toEqual([[0], [1], [2]]);
+  });
+
   test("une page large reste seule", () => {
     expect(buildSpreads([tall, tall, wide, tall, tall], true)).toEqual([[0], [1], [2], [3, 4]]);
   });
@@ -87,6 +93,12 @@ describe("doubles pages", () => {
     expect(pagedPercent(spreads[1], 3)).toBe(100);
     expect(pagedPercent(undefined, 3)).toBe(0);
   });
+});
+
+test("zoom borné et arrondi", () => {
+  expect(clampZoom(10)).toBe(5);
+  expect(clampZoom(0.01)).toBe(0.25);
+  expect(clampZoom(1.234)).toBe(1.23);
 });
 
 test("préchargement borné aux limites du chapitre", () => {

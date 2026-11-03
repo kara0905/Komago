@@ -4,6 +4,8 @@
   import Modal from "../components/Modal.svelte";
   import {
     collectionChapters,
+    continueReading,
+    type ContinueItem,
     coverUrl,
     deleteCollection,
     listSeries,
@@ -15,7 +17,7 @@
     type SeriesSort,
   } from "../lib/api";
   import { app } from "../lib/app.svelte";
-  import { KINDS, plural, STATUSES } from "../lib/format";
+  import { chapterLabel, KINDS, plural, STATUSES } from "../lib/format";
   import { settings } from "../lib/settings.svelte";
 
   let { collectionId }: { collectionId: string | null } = $props();
@@ -23,6 +25,7 @@
   let series = $state<SeriesCard[]>([]);
   let chapters = $state<ChapterRow[]>([]);
   let loaded = $state(false);
+  let resume = $state<ContinueItem[]>([]);
   let sort = $state<SeriesSort>("title");
   let kind = $state("");
   let status = $state("");
@@ -60,6 +63,17 @@
     return () => {
       current = false;
     };
+  });
+
+  // Accueil seulement : pas dans une collection, une recherche ou un filtre.
+  const showResume = $derived(!collectionId && !filtered && resume.length > 0);
+
+  $effect(() => {
+    void app.revision;
+    if (collectionId) return;
+    app.attempt(async () => {
+      resume = await continueReading();
+    });
   });
 
   function startRename() {
@@ -137,6 +151,30 @@
       </div>
     </div>
   </header>
+
+  {#if showResume}
+    <section class="resume" aria-label="Continuer la lecture">
+      <h2>Continuer la lecture</h2>
+      <div class="resume-row">
+        {#each resume as item (item.chapter.id)}
+          <button class="resume-card" onclick={() => app.go({ name: "reader", chapterId: item.chapter.id })}>
+            <span class="resume-cover">
+              <Cover src={item.coverAssetId ? coverUrl(item.coverAssetId) : null} title={item.chapter.seriesTitle} />
+            </span>
+            <span class="resume-text">
+              <span class="card-title">{item.chapter.seriesTitle}</span>
+              <span class="card-meta">
+                {chapterLabel(item.chapter)}{item.chapter.percent !== null ? ` · ${Math.max(1, Math.round(item.chapter.percent))} %` : ""}
+              </span>
+              {#if item.chapter.percent !== null}
+                <span class="bar"><span style:width="{item.chapter.percent}%"></span></span>
+              {/if}
+            </span>
+          </button>
+        {/each}
+      </div>
+    </section>
+  {/if}
 
   {#if series.length > 0}
     {#if layout === "grid"}
@@ -304,6 +342,52 @@
     box-shadow:
       inset 0 0 0 1px var(--border),
       0 4px 14px rgb(0 0 0 / 0.22);
+  }
+
+  .resume h2 {
+    margin: 0 0 8px;
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .resume-row {
+    display: grid;
+    grid-auto-columns: minmax(230px, 300px);
+    grid-auto-flow: column;
+    gap: 12px;
+    overflow-x: auto;
+    padding-bottom: 6px;
+  }
+
+  .resume-card {
+    display: flex;
+    gap: 10px;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    text-align: left;
+  }
+
+  .resume-card:hover {
+    background: var(--hover);
+  }
+
+  .resume-cover {
+    flex: none;
+    width: 46px;
+  }
+
+  .resume-text {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .resume-text .card-title {
+    margin-top: 0;
   }
 
   .bar {
