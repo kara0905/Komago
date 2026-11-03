@@ -57,7 +57,7 @@ jobs:
           args: ${{ matrix.args }}
       # Lancement manuel, sans étiquette : les paquets restent en artefacts.
       - if: github.ref_type != 'tag'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: komago-${{ matrix.os }}-${{ matrix.target }}
           path: |
